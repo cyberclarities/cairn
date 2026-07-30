@@ -1,0 +1,75 @@
+## CAIRN — standalone deployment (PostgreSQL)
+##
+## Access: https://{SERVER_NAME}
+##
+## Usage:
+##   cp .env.example .env && nano .env
+##   docker compose up --build -d
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: cairn_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cairn}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-cairn}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - cairn_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cairn} -d ${POSTGRES_DB:-cairn}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  caddy:
+    image: caddy:alpine
+    container_name: cairn_caddy
+    restart: unless-stopped
+    ports:
+      ##- "80:80"
+      - "7443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - SERVER_NAME=${SERVER_NAME:-localhost}
+      - PORT=${PORT:-5002}
+    networks:
+      - cairn_net
+    depends_on:
+      - web
+
+  web:
+    build: .
+    container_name: cairn_web
+    restart: unless-stopped
+    expose:
+      - "${PORT:-5002}"
+    env_file:
+      - .env
+    environment:
+      - PORT=${PORT:-5002}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-cairn}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB:-cairn}
+    networks:
+      - cairn_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+networks:
+  cairn_net:
+    name: cairn_net
+
+volumes:
+  caddy_data:
+    name: cairn_caddy_data
+  caddy_config:
+    name: cairn_caddy_config
+  postgres_data:
+    name: cairn_postgres_data

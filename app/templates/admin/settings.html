@@ -1,0 +1,272 @@
+{% extends "base.html" %}
+{% block title %}Settings — CAIRN{% endblock %}
+{% block page_title %}Settings{% endblock %}
+
+{% block content %}
+<ul class="nav nav-tabs mb-0" id="settingsTabs" role="tablist">
+  {% for tid, tlabel in [("case_type","Case Types"),("ioc_type","IOC Types"),("evidence_type","Evidence Types"),("database","Database")] %}
+  <li class="nav-item">
+    <button class="nav-link {% if loop.first %}active{% endif %}" id="{{ tid }}-tab"
+            data-bs-toggle="tab" data-bs-target="#{{ tid }}" type="button">{{ tlabel }}</button>
+  </li>
+  {% endfor %}
+</ul>
+
+<div class="tab-content border border-top-0 rounded-bottom bg-white p-3" id="settingsContent">
+
+  {% for list_name in ["case_type","ioc_type","evidence_type"] %}
+  <div class="tab-pane fade {% if loop.first %}show active{% endif %}" id="{{ list_name }}">
+    <div class="row justify-content-center">
+      <div class="col-md-6">
+        <div class="list-group mb-3">
+          {% for lv in lists[list_name] %}
+          <div class="list-group-item d-flex justify-content-between align-items-center py-2">
+            <span class="small">{{ lv.value }}</span>
+            <div class="d-flex gap-1">
+              <form method="POST" action="{{ url_for('settings.move_lookup', lv_id=lv.id, direction='up') }}" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="btn btn-xs btn-outline-secondary btn-sm py-0 px-1"><i class="bi bi-chevron-up"></i></button>
+              </form>
+              <form method="POST" action="{{ url_for('settings.move_lookup', lv_id=lv.id, direction='down') }}" class="d-inline">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="btn btn-xs btn-outline-secondary btn-sm py-0 px-1"><i class="bi bi-chevron-down"></i></button>
+              </form>
+              <form method="POST" action="{{ url_for('settings.remove_lookup', lv_id=lv.id) }}" class="d-inline"
+                    onsubmit="return confirm('Remove this value?')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="btn btn-xs btn-outline-danger btn-sm py-0 px-1"><i class="bi bi-trash"></i></button>
+              </form>
+            </div>
+          </div>
+          {% else %}
+          <div class="list-group-item text-muted small">No values yet.</div>
+          {% endfor %}
+        </div>
+        <!-- Add new -->
+        <form method="POST" action="{{ url_for('settings.add_lookup') }}" class="d-flex gap-2">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="list_name" value="{{ list_name }}">
+          <input type="text" name="value" class="form-control form-control-sm" placeholder="New value…" required>
+          <button type="submit" class="btn btn-sm btn-danger">Add</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+
+  <!-- DATABASE TAB -->
+  <div class="tab-pane fade" id="database">
+    <div class="row justify-content-center">
+      <div class="col-md-6">
+
+        <div class="card mb-3">
+          <div class="card-header bg-white fw-semibold small">
+            <i class="bi bi-download text-primary me-1"></i> Backup — Download SQL Dump
+          </div>
+          <div class="card-body">
+            <p class="small text-muted mb-3">
+              Runs <code>pg_dump</code> against the live PostgreSQL database and streams the result
+              as a compressed <code>.sql.gz</code> file. The dump includes <code>DROP … IF EXISTS</code>
+              statements so it can be restored cleanly to any target database.
+            </p>
+            <a href="{{ url_for('settings.download_db') }}" class="btn btn-outline-primary btn-sm">
+              <i class="bi bi-file-earmark-zip"></i> Download .sql.gz
+            </a>
+          </div>
+        </div>
+
+        <div class="card border-warning">
+          <div class="card-header bg-white fw-semibold small text-warning">
+            <i class="bi bi-upload me-1"></i> Restore — Upload SQL Dump
+          </div>
+          <div class="card-body">
+            <p class="small text-muted mb-2">
+              Uploads a <code>.sql</code> or <code>.sql.gz</code> file produced by
+              <code>pg_dump</code> and pipes it through <code>psql</code> to restore.
+              Accepts dumps produced by the Download button above or by
+              <code>pg_dump --clean --if-exists</code> run manually.
+            </p>
+            <div class="alert alert-danger py-2 small mb-3">
+              <i class="bi bi-exclamation-octagon-fill"></i>
+              <strong>Destructive:</strong> this overwrites all tables with the content of
+              the uploaded dump. There is no automatic pre-restore backup — download a fresh
+              backup first if you need a safety copy.
+            </div>
+            <form id="restore-form" method="POST" action="{{ url_for('settings.restore_db') }}" enctype="multipart/form-data">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <div class="mb-3">
+                <label class="form-label small fw-semibold">Dump file (.sql or .sql.gz)</label>
+                <input type="file" id="dump_file" name="dump_file" accept=".sql,.sql.gz,.gz"
+                       class="form-control form-control-sm" required>
+              </div>
+              <button id="restore-btn" type="button" class="btn btn-warning btn-sm"
+                      onclick="confirmRestore()">
+                <i class="bi bi-arrow-counterclockwise"></i> Restore Database
+              </button>
+              <span id="restore-spinner" class="d-none ms-2 small text-muted">
+                <span class="spinner-border spinner-border-sm" role="status"></span>
+                Restoring… this may take a minute, please wait.
+              </span>
+            </form>
+            <script>
+            function confirmRestore() {
+              var f = document.getElementById('dump_file');
+              if (!f.value) { alert('Please select a dump file first.'); return; }
+              if (!confirm('This will OVERWRITE the live database with the uploaded dump.\n\nAre you sure?')) return;
+              document.getElementById('restore-btn').disabled = true;
+              document.getElementById('restore-spinner').classList.remove('d-none');
+              document.getElementById('restore-form').submit();
+            }
+            </script>
+          </div>
+        </div>
+
+        <div class="card border-danger mt-3">
+          <div class="card-header bg-white fw-semibold small text-danger">
+            <i class="bi bi-trash3 me-1"></i> Delete a Case
+          </div>
+          <div class="card-body">
+            <p class="small text-muted mb-2">
+              Permanently deletes a case and everything on it — IOCs, evidence, timeline
+              events, status history, and its audit trail. Alerts that were promoted or
+              linked to the case are not deleted; they're unlinked and marked Dismissed.
+            </p>
+            <div class="alert alert-danger py-2 small mb-3">
+              <i class="bi bi-exclamation-octagon-fill"></i>
+              <strong>Destructive and permanent.</strong> A full database snapshot is taken
+              first, so this can be undone via Restore above if needed — but the case itself
+              is gone the moment this completes.
+            </div>
+            <form id="delete-case-form" method="POST" action="{{ url_for('settings.delete_case', case_id_int=0) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" id="confirm_case_id" name="confirm_case_id" value="">
+              <div class="mb-3">
+                <label class="form-label small fw-semibold">Case</label>
+                <select id="delete-case-select" class="form-select form-select-sm">
+                  <option value="">Select a case…</option>
+                  {% for c in cases %}
+                  <option value="{{ c.id }}" data-case-id="{{ c.case_id }}">{{ c.case_id }} — {{ c.title }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <button id="delete-case-btn" type="button" class="btn btn-danger btn-sm" onclick="confirmDeleteCase()">
+                <i class="bi bi-trash3"></i> Delete Case
+              </button>
+            </form>
+            <script>
+            function confirmDeleteCase() {
+              var sel = document.getElementById('delete-case-select');
+              var opt = sel.options[sel.selectedIndex];
+              if (!sel.value) { alert('Select a case first.'); return; }
+              var caseId = opt.getAttribute('data-case-id');
+              var typed = prompt(
+                'This permanently deletes ' + caseId + ' and all of its IOCs, evidence, ' +
+                'and timeline events.\n\nType the case ID (' + caseId + ') to confirm:'
+              );
+              if (typed === null) return;
+              if (typed.trim() !== caseId) {
+                alert('That did not match ' + caseId + '. Nothing was deleted.');
+                return;
+              }
+              var form = document.getElementById('delete-case-form');
+              form.action = form.action.replace(/\/case\/\d+\/delete/, '/case/' + sel.value + '/delete');
+              document.getElementById('confirm_case_id').value = typed.trim();
+              document.getElementById('delete-case-btn').disabled = true;
+              form.submit();
+            }
+            </script>
+          </div>
+        </div>
+
+        <div class="card border-danger mt-3">
+          <div class="card-header bg-white fw-semibold small text-danger">
+            <i class="bi bi-trash3 me-1"></i> Purge Old Alerts
+          </div>
+          <div class="card-body">
+            <p class="small text-muted mb-2">
+              Bulk-deletes alerts by status, source, and age — a retention tool for
+              the alert queue rather than a one-at-a-time cleanup. A case's own record
+              of a promoted or linked alert lives in its timeline, not the alert row
+              itself, so purging alerts never touches a case.
+            </p>
+            <form method="GET" action="{{ url_for('settings.index') }}#database" class="row g-2 align-items-end mb-2">
+              <div class="col-md-3">
+                <label class="form-label small fw-semibold">Status</label>
+                <select name="purge_status" class="form-select form-select-sm">
+                  <option value="" {% if not purge_preview or purge_preview.status == '' %}selected{% endif %}>Any status</option>
+                  {% for s, label in [("new","New"),("reviewing","Reviewing"),("promoted","Promoted"),("dismissed","Dismissed")] %}
+                  <option value="{{ s }}" {% if purge_preview and purge_preview.status == s %}selected{% endif %}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small fw-semibold">Source</label>
+                <select name="purge_source" class="form-select form-select-sm">
+                  <option value="" {% if not purge_preview or purge_preview.source == '' %}selected{% endif %}>All sources</option>
+                  <option value="crowdstrike" {% if purge_preview and purge_preview.source == 'crowdstrike' %}selected{% endif %}>CrowdStrike</option>
+                  <option value="proofpoint" {% if purge_preview and purge_preview.source == 'proofpoint' %}selected{% endif %}>Proofpoint</option>
+                </select>
+              </div>
+              <div class="col-md-3">
+                <label class="form-label small fw-semibold">Older than (days)</label>
+                <input type="number" name="purge_days" min="1" class="form-control form-control-sm"
+                       value="{{ purge_preview.days if purge_preview else 90 }}">
+              </div>
+              <div class="col-md-3">
+                <button type="submit" class="btn btn-sm btn-outline-danger w-100">Preview</button>
+              </div>
+            </form>
+
+            {% if purge_preview %}
+              {% if purge_preview.count > 0 %}
+              <div class="alert alert-danger py-2 small mb-2">
+                <i class="bi bi-exclamation-octagon-fill"></i>
+                <strong>{{ purge_preview.count }} alert{{ 's' if purge_preview.count != 1 }}</strong> match
+                status={{ purge_preview.status or 'any' }}, source={{ purge_preview.source or 'any' }},
+                fetched more than {{ purge_preview.days }} day{{ 's' if purge_preview.days != 1 }} ago.
+                A full database snapshot is taken before deleting, same as case delete.
+              </div>
+              <form id="purge-form" method="POST" action="{{ url_for('settings.purge_alerts') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="purge_status" value="{{ purge_preview.status }}">
+                <input type="hidden" name="purge_source" value="{{ purge_preview.source }}">
+                <input type="hidden" name="purge_days" value="{{ purge_preview.days }}">
+                <input type="hidden" id="purge_confirm_text" name="confirm_text" value="">
+                <button type="button" class="btn btn-danger btn-sm" onclick="confirmPurge({{ purge_preview.count }})">
+                  <i class="bi bi-trash3"></i> Delete {{ purge_preview.count }} Alert{{ 's' if purge_preview.count != 1 }}
+                </button>
+              </form>
+              <script>
+              function confirmPurge(n) {
+                var typed = prompt('This permanently deletes ' + n + ' alert(s). Type DELETE to confirm:');
+                if (typed === null) return;
+                if (typed.trim() !== 'DELETE') { alert('That did not match. Nothing was purged.'); return; }
+                document.getElementById('purge_confirm_text').value = 'DELETE';
+                document.getElementById('purge-form').submit();
+              }
+              </script>
+              {% else %}
+              <div class="alert alert-info py-2 small mb-0">No alerts match that criteria.</div>
+              {% endif %}
+            {% endif %}
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</div><!-- end tab-content -->
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const hash = window.location.hash;
+  if (hash) {
+    const tab = document.querySelector(`[data-bs-target="${hash}"]`);
+    if (tab) new bootstrap.Tab(tab).show();
+  }
+});
+</script>
+{% endblock %}
+{% endblock %}

@@ -1,0 +1,344 @@
+{% extends "base.html" %}
+{% block title %}{{ page_title }} — CAIRN{% endblock %}
+{% block page_title %}{{ page_title }}{% endblock %}
+
+{% block content %}
+
+{# ── Status tab bar ─────────────────────────────────────────────────────── #}
+<ul class="nav nav-tabs mb-3">
+  {% for s, label in [("new","New"),("reviewing","Reviewing"),("promoted","Promoted"),("dismissed","Dismissed")] %}
+  <li class="nav-item">
+    <a class="nav-link {% if status_filter == s %}active{% endif %}"
+       href="{{ url_for('alerts.list_alerts', status=s, search=search, severity=severity_filter, source=source_filter) }}">
+      {{ label }}
+      <span class="badge bg-{{ {'new':'danger','reviewing':'warning','promoted':'success','dismissed':'secondary'}[s] }} ms-1">
+        {{ counts[s] }}
+      </span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+
+{# ── Filters ─────────────────────────────────────────────────────────────── #}
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <form method="GET" class="row g-2 align-items-end">
+      <input type="hidden" name="status" value="{{ status_filter }}">
+      <div class="col-md-3">
+        <input type="text" name="search" class="form-control form-control-sm"
+               placeholder="Search hostname, user, tactic, ID…" value="{{ search }}">
+      </div>
+      <div class="col-md-2">
+        <select name="severity" class="form-select form-select-sm">
+          <option value="">All Severities</option>
+          {% for s in severities %}
+          <option value="{{ s }}" {% if severity_filter == s %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% if not forced_source %}
+      <div class="col-md-2">
+        <select name="source" class="form-select form-select-sm">
+          <option value="">All Sources</option>
+          <option value="crowdstrike" {% if source_filter == 'crowdstrike' %}selected{% endif %}>CrowdStrike</option>
+          <option value="proofpoint"  {% if source_filter == 'proofpoint'  %}selected{% endif %}>Proofpoint</option>
+        </select>
+      </div>
+      {% endif %}
+      <div class="col-md-2 d-flex gap-2">
+        <button type="submit" class="btn btn-sm btn-primary flex-fill">Filter</button>
+        <a href="{{ url_for('alerts.list_alerts') }}" class="btn btn-sm btn-outline-secondary">Clear</a>
+      </div>
+    </form>
+
+    {% if current_user.is_admin %}
+    <div class="mt-2 d-flex gap-2 justify-content-end">
+      {% if forced_source %}
+        {# Source-specific page — single poll button for that source #}
+        <form method="POST" action="{{ url_for('alerts.fetch_now') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="source" value="{{ forced_source }}">
+          <input type="hidden" name="redirect_to" value="{{ request.endpoint }}">
+          <button type="submit" class="btn btn-sm btn-outline-primary">
+            <i class="bi bi-arrow-clockwise"></i> Poll Now
+          </button>
+        </form>
+      {% else %}
+        {# All-alerts page — buttons for each source #}
+        {% for src, label in [('all','Poll All'),('crowdstrike','CrowdStrike'),('proofpoint','Proofpoint')] %}
+        <form method="POST" action="{{ url_for('alerts.fetch_now') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="source" value="{{ src }}">
+          <input type="hidden" name="redirect_to" value="alerts.list_alerts">
+          <button type="submit" class="btn btn-sm btn-outline-primary">
+            <i class="bi bi-arrow-clockwise"></i> {{ label }}
+          </button>
+        </form>
+        {% endfor %}
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Alert table with multi-select ───────────────────────────────────────── #}
+<form id="bulkForm">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+  <div class="card">
+    <div class="card-header bg-white d-flex justify-content-between align-items-center">
+      <span class="fw-semibold small">{{ alerts|length }} alert{{ 's' if alerts|length != 1 }}</span>
+      {% if current_user.is_analyst and status_filter in ('new','reviewing') %}
+      <div class="d-flex gap-2">
+        <button type="button" class="btn btn-sm btn-success" id="btnPromote"
+                data-bs-toggle="modal" data-bs-target="#promoteModal" disabled>
+          <i class="bi bi-arrow-up-circle"></i> Promote to Case
+        </button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="btnLink"
+                data-bs-toggle="modal" data-bs-target="#linkModal" disabled>
+          <i class="bi bi-link-45deg"></i> Link to Case
+        </button>
+        <button type="button" class="btn btn-sm btn-outline-warning" id="btnDismiss"
+                data-bs-toggle="modal" data-bs-target="#dismissBulkModal" disabled>
+          <i class="bi bi-x-circle"></i> Dismiss Selected
+        </button>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-hover mb-0">
+          <thead>
+            <tr>
+              {% if current_user.is_analyst %}
+              <th class="ps-3" style="width:36px;">
+                <input type="checkbox" id="selectAll" class="form-check-input">
+              </th>
+              {% endif %}
+              <th>Source</th>
+              <th>Severity</th>
+              <th>Tactic / Technique</th>
+              <th>Host / Sender</th>
+              <th>User / Recipient</th>
+              <th>Detected</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for a in alerts %}
+            <tr onclick="location.href='{{ url_for('alerts.detail', alert_id=a.id) }}'">
+              {% if current_user.is_analyst %}
+              <td class="ps-3" onclick="event.stopPropagation()">
+                <input type="checkbox" class="form-check-input alert-check" name="alert_ids" value="{{ a.id }}">
+              </td>
+              {% endif %}
+              <td>
+                <span class="badge bg-{{ a.source_color }}">{{ a.source_label }}</span>
+              </td>
+              <td>
+                <span class="badge bg-{{ a.severity_color }}">{{ a.severity_name or '—' }}</span>
+                {% if a.severity %}<small class="text-muted ms-1">{{ a.severity }}</small>{% endif %}
+              </td>
+              <td class="small">
+                {% if a.tactic %}<div class="fw-semibold">{{ a.tactic }}</div>{% endif %}
+                {% if a.technique %}<div class="text-muted">{{ a.technique }}</div>{% endif %}
+              </td>
+              <td class="small">{{ a.host_hostname or '—' }}</td>
+              <td class="small">{{ a.username or '—' }}</td>
+              <td class="small text-muted">
+                {{ a.cs_created_at.strftime('%Y-%m-%d %H:%M') if a.cs_created_at else
+                   (a.fetched_at.strftime('%Y-%m-%d %H:%M') if a.fetched_at else '—') }}
+              </td>
+              <td>
+                <span class="badge bg-{{ a.status_color }}">{{ a.status }}</span>
+                {% if a.case %}
+                <a href="{{ url_for('cases.detail', case_id_int=a.case.id) }}"
+                   class="ms-1 small text-decoration-none" onclick="event.stopPropagation()">
+                  {{ a.case.case_id }}
+                </a>
+                {% endif %}
+              </td>
+              <td class="text-end pe-3" onclick="event.stopPropagation()">
+                <a href="{{ url_for('alerts.detail', alert_id=a.id) }}"
+                   class="btn btn-xs btn-outline-secondary btn-sm py-0 px-2">
+                  <i class="bi bi-eye"></i>
+                </a>
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="9" class="text-center text-muted py-5">
+                No alerts in this queue.
+                {% if current_user.is_admin %}
+                <form method="POST" action="{{ url_for('alerts.fetch_now') }}" class="d-inline ms-2">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                  <input type="hidden" name="source" value="all">
+                  <button class="btn btn-sm btn-outline-primary">Poll All Sources Now</button>
+                </form>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</form>
+
+{% if current_user.is_analyst %}
+<div class="modal fade" id="promoteModal" tabindex="-1">
+  <div class="modal-dialog">
+    <form method="POST" action="{{ url_for('alerts.promote') }}" class="modal-content" id="promoteForm">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="modal-header"><h5 class="modal-title">Promote Alerts → New Case</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <p class="small text-muted mb-3" id="promoteSubtitle"></p>
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">Case Title <span class="text-danger">*</span></label>
+          <input type="text" name="title" class="form-control" required
+                 placeholder="e.g. Credential Theft — Finance Workstation">
+        </div>
+        <div class="row g-2">
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Severity</label>
+            <select name="severity" class="form-select">
+              {% for s in ["Critical","High","Medium","Low","Informational"] %}
+              <option value="{{ s }}" {% if s == "High" %}selected{% endif %}>{{ s }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Case Type</label>
+            <input type="text" name="case_type" class="form-control" placeholder="e.g. Phishing">
+          </div>
+        </div>
+        <div class="mt-3">
+          <label class="form-label small fw-semibold">Description (optional)</label>
+          <textarea name="description" class="form-control" rows="3"
+                    placeholder="Leave blank to auto-generate from alert context"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-success btn-sm">Create Case</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal fade" id="linkModal" tabindex="-1">
+  <div class="modal-dialog">
+    <form method="POST" action="{{ url_for('alerts.link_to_case') }}" class="modal-content" id="linkForm">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="modal-header"><h5 class="modal-title">Link Alerts to Existing Case</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <p class="small text-muted mb-3" id="linkSubtitle"></p>
+        <label class="form-label small fw-semibold">Case ID <span class="text-danger">*</span></label>
+        <input type="text" name="case_id" class="form-control" required
+               placeholder="Enter numeric case ID (e.g. 3)">
+        <div class="form-text">Enter the internal numeric ID of the target case.</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-primary btn-sm">Link Alerts</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal fade" id="dismissBulkModal" tabindex="-1">
+  <div class="modal-dialog">
+    <form method="POST" action="{{ url_for('alerts.bulk_dismiss') }}" class="modal-content" id="dismissForm">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-x-circle me-2"></i>Dismiss Alerts</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small mb-3"><span id="dismissSubtitle" class="fw-semibold"></span> will be marked dismissed.</p>
+        <label class="form-label small fw-semibold">Reason <span class="text-muted fw-normal">(optional)</span></label>
+        <select name="reason" class="form-select form-select-sm mb-2">
+          <option value="">— Select a reason —</option>
+          <option value="False Positive">False Positive</option>
+          <option value="Duplicate">Duplicate alert</option>
+          <option value="Expected Behaviour">Expected / Authorized behaviour</option>
+          <option value="Out of Scope">Out of scope</option>
+          <option value="Noise">Noise / Informational only</option>
+          <option value="Other">Other</option>
+        </select>
+        <textarea name="notes" class="form-control form-control-sm" rows="2"
+                  placeholder="Additional notes…"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-warning btn-sm"><i class="bi bi-x-circle"></i> Dismiss</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+  const checks = () => document.querySelectorAll('.alert-check');
+  const selectAll  = document.getElementById('selectAll');
+  const btnPromote = document.getElementById('btnPromote');
+  const btnLink    = document.getElementById('btnLink');
+  const btnDismiss = document.getElementById('btnDismiss');
+  const promoteForm = document.getElementById('promoteForm');
+  const linkForm    = document.getElementById('linkForm');
+  const dismissForm = document.getElementById('dismissForm');
+
+  function selectedIds() { return [...checks()].filter(c => c.checked).map(c => c.value); }
+  function selectedLabel() { const n = selectedIds().length; return n === 1 ? '1 alert' : `${n} alerts`; }
+
+  function syncButtons() {
+    const any = selectedIds().length > 0;
+    if (btnPromote) btnPromote.disabled = !any;
+    if (btnLink)    btnLink.disabled    = !any;
+    if (btnDismiss) btnDismiss.disabled = !any;
+  }
+
+  function injectIds(form) {
+    form.querySelectorAll('input[name="alert_ids"]').forEach(el => el.remove());
+    selectedIds().forEach(id => {
+      const inp = document.createElement('input');
+      inp.type = 'hidden'; inp.name = 'alert_ids'; inp.value = id;
+      form.appendChild(inp);
+    });
+  }
+
+  function updateSubtitles() {
+    const label = selectedLabel();
+    ['promoteSubtitle','linkSubtitle'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = label + ' selected'; });
+    const ds = document.getElementById('dismissSubtitle');
+    if (ds) ds.textContent = label;
+  }
+
+  document.addEventListener('change', e => {
+    if (e.target.classList.contains('alert-check') || e.target.id === 'selectAll') {
+      if (e.target.id === 'selectAll') checks().forEach(c => c.checked = selectAll.checked);
+      syncButtons(); updateSubtitles();
+    }
+  });
+
+  ['promoteModal','linkModal','dismissBulkModal'].forEach(modalId => {
+    const el = document.getElementById(modalId);
+    if (!el) return;
+    el.addEventListener('show.bs.modal', () => {
+      const formMap = { promoteModal: promoteForm, linkModal: linkForm, dismissBulkModal: dismissForm };
+      const form = formMap[modalId];
+      if (form) { injectIds(form); updateSubtitles(); }
+    });
+  });
+})();
+</script>
+{% endblock %}

@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — CAIRN{% endblock %}
+{% block page_title %}Dashboard{% endblock %}
+
+{% block content %}
+
+{# ── Case KPI Row ──────────────────────────────────────────────────────────── #}
+<div class="row g-3 mb-3">
+  {% set kpis = [
+    ("Open Cases",    open_cases,               "bi-folder2-open",            "danger"),
+    ("Critical",      severity_counts.Critical, "bi-exclamation-octagon-fill","danger"),
+    ("High",          severity_counts.High,     "bi-exclamation-triangle-fill","warning"),
+    ("Escalated",     escalated_cases,          "bi-arrow-up-circle-fill",    "warning"),
+    ("Board Flagged", board_flagged,            "bi-flag-fill",               "dark"),
+    ("Active IOCs",   active_iocs,             "bi-bug-fill",                "primary"),
+  ] %}
+  {% for label, value, icon, color in kpis %}
+  <div class="col-6 col-md-4 col-lg-2">
+    <div class="card kpi-card h-100">
+      <div class="card-body py-3">
+        <div class="d-flex justify-content-between align-items-start">
+          <div>
+            <div class="kpi-value text-{{ color }}">{{ value }}</div>
+            <div class="kpi-label mt-1">{{ label }}</div>
+          </div>
+          <i class="bi {{ icon }} text-{{ color }} opacity-25" style="font-size:1.8rem;"></i>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{# ── Alert KPI Row (all sources) ───────────────────────────────────────────── #}
+<div class="row g-3 mb-4">
+  {% for label, value, icon, color, qs in [
+    ("New Alerts",      alert_new,       "bi-shield-exclamation",      "danger",  {'status':'new'}),
+    ("Reviewing",       alert_reviewing, "bi-hourglass-split",         "warning", {'status':'reviewing'}),
+    ("Critical Alerts", alert_critical,  "bi-shield-fill-x",           "danger",  {'status':'new','severity':'Critical'}),
+    ("High Alerts",     alert_high,      "bi-shield-fill-exclamation", "warning", {'status':'new','severity':'High'}),
+  ] %}
+  <div class="col-6 col-md-3">
+    <a href="{{ url_for('alerts.list_alerts', **qs) }}" class="text-decoration-none">
+      <div class="card kpi-card h-100 border-start border-3 border-{{ color }}">
+        <div class="card-body py-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div>
+              <div class="kpi-value text-{{ color }}">{{ value }}</div>
+              <div class="kpi-label mt-1">{{ label }}</div>
+            </div>
+            <i class="bi {{ icon }} text-{{ color }} opacity-25" style="font-size:1.8rem;"></i>
+          </div>
+        </div>
+      </div>
+    </a>
+  </div>
+  {% endfor %}
+</div>
+
+{# ── Mid row: case severity / status / alert severity / MITRE ─────────────── #}
+<div class="row g-3 mb-4">
+
+  <div class="col-lg-3">
+    <div class="card h-100">
+      <div class="card-header fw-semibold small">Open Cases by Severity</div>
+      <div class="card-body py-2">
+        {% for sev, color in [("Critical","danger"),("High","warning"),("Medium","primary"),("Low","success"),("Informational","secondary")] %}
+        <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+          <span class="badge bg-{{ color }}">{{ sev }}</span>
+          <span class="fw-semibold">{{ severity_counts.get(sev, 0) }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-3">
+    <div class="card h-100">
+      <div class="card-header fw-semibold small">Cases by Status</div>
+      <div class="card-body py-2">
+        {% for st in ["New","In Progress","Contained","Eradicated","Recovered","Closed"] %}
+        <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+          <span class="text-muted small">{{ st }}</span>
+          <span class="fw-semibold">{{ status_counts.get(st, 0) }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-3">
+    <div class="card h-100">
+      <div class="card-header fw-semibold small">Active Alerts by Severity</div>
+      <div class="card-body py-2">
+        {% for sev, color in [("Critical","danger"),("High","warning"),("Medium","primary"),("Low","success"),("Informational","secondary")] %}
+        <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+          <a href="{{ url_for('alerts.list_alerts', status='new', severity=sev) }}" class="text-decoration-none">
+            <span class="badge bg-{{ color }}">{{ sev }}</span>
+          </a>
+          <span class="fw-semibold">{{ alert_severity_counts.get(sev, 0) }}</span>
+        </div>
+        {% endfor %}
+        {# Source breakdown #}
+        {% if alert_source_counts %}
+        <div class="mt-3 pt-2 border-top">
+          <div class="small text-muted mb-2">By Source</div>
+          {% for src, label, color in [('crowdstrike','CrowdStrike','danger'),('proofpoint','Proofpoint','primary')] %}
+          {% if alert_source_counts.get(src, 0) or true %}
+          <div class="d-flex justify-content-between align-items-center mb-1">
+            <a href="{{ url_for('alerts.list_alerts', status='new', source=src) }}" class="text-decoration-none">
+              <span class="badge bg-{{ color }}">{{ label }}</span>
+            </a>
+            <span class="small fw-semibold">{{ alert_source_counts.get(src, 0) }}</span>
+          </div>
+          {% endif %}
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-3">
+    <div class="card h-100">
+      <div class="card-header fw-semibold small">Top MITRE Tactics</div>
+      <div class="card-body py-2">
+        {% if tactic_data %}
+          {% set max_count = tactic_data[0].count %}
+          {% for item in tactic_data %}
+          <div class="mb-2">
+            <div class="d-flex justify-content-between small mb-1">
+              <span>{{ item.tactic }}</span>
+              <span class="fw-semibold">{{ item.count }}</span>
+            </div>
+            <div class="progress" style="height:4px;">
+              <div class="progress-bar bg-danger" style="width:{{ (item.count / max_count * 100)|int }}%"></div>
+            </div>
+          </div>
+          {% endfor %}
+        {% else %}
+          <p class="text-muted small mt-2">No timeline events recorded yet.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+</div>
+
+{# ── Recent Alerts (all sources) ───────────────────────────────────────────── #}
+<div class="card mb-4">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span class="fw-semibold small">
+      <i class="bi bi-shield-exclamation text-danger me-1"></i>
+      Recent Alerts
+      {% if alert_new %}<span class="badge bg-danger ms-1">{{ alert_new }} new</span>{% endif %}
+    </span>
+    <a href="{{ url_for('alerts.list_alerts') }}" class="btn btn-sm btn-outline-secondary">View All</a>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead>
+          <tr>
+            <th class="ps-3">Source</th>
+            <th>Severity</th>
+            <th>Tactic / Technique</th>
+            <th>Host / Sender</th>
+            <th>User / Recipient</th>
+            <th>Detected</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in recent_alerts %}
+          <tr onclick="location.href='{{ url_for('alerts.detail', alert_id=a.id) }}'">
+            <td class="ps-3">
+              <span class="badge bg-{{ a.source_color }}">{{ a.source_label }}</span>
+            </td>
+            <td>
+              <span class="badge bg-{{ a.severity_color }}">{{ a.severity_name or '—' }}</span>
+            </td>
+            <td class="small">
+              {% if a.tactic %}<div class="fw-semibold">{{ a.tactic }}</div>{% endif %}
+              {% if a.technique %}<div class="text-muted">{{ a.technique }}</div>{% endif %}
+            </td>
+            <td class="small">{{ a.host_hostname or '—' }}</td>
+            <td class="small text-muted">{{ a.username or '—' }}</td>
+            <td class="small text-muted">
+              {{ a.cs_created_at.strftime('%Y-%m-%d %H:%M') if a.cs_created_at else
+                 (a.fetched_at.strftime('%Y-%m-%d %H:%M') if a.fetched_at else '—') }}
+            </td>
+            <td><span class="badge bg-{{ a.status_color }}">{{ a.status }}</span></td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="7" class="text-center text-muted py-4 small">
+              No active alerts. Configure integration credentials in <code>.env</code> to enable polling.
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{# ── Recent Cases ──────────────────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span class="fw-semibold small">Recent Cases</span>
+    <a href="{{ url_for('cases.list_cases') }}" class="btn btn-sm btn-outline-secondary">View All</a>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead>
+          <tr>
+            <th class="ps-3">Case ID</th>
+            <th>Title</th>
+            <th>Severity</th>
+            <th>Status</th>
+            <th>Type</th>
+            <th>Lead Analyst</th>
+            <th>Opened</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in recent_cases %}
+          <tr onclick="location.href='{{ url_for('cases.detail', case_id_int=c.id) }}'">
+            <td class="ps-3 fw-semibold">{{ c.case_id }}</td>
+            <td>{{ c.title }}</td>
+            <td><span class="badge bg-{{ c.severity_color }}">{{ c.severity }}</span></td>
+            <td><span class="badge bg-{{ c.status_color }}">{{ c.status }}</span></td>
+            <td class="text-muted small">{{ c.case_type or '—' }}</td>
+            <td class="text-muted small">{{ c.lead_analyst.name if c.lead_analyst else '—' }}</td>
+            <td class="text-muted small">{{ c.opened_date.strftime('%Y-%m-%d') if c.opened_date else '—' }}</td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="7" class="text-center text-muted py-4">
+              No cases yet. <a href="{{ url_for('cases.new_case') }}">Create the first one.</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

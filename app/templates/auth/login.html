@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+
+{% block auth_content %}
+<div class="min-vh-100 d-flex align-items-center justify-content-center"
+     style="background: #f0f7ff;">
+  <div class="card shadow-sm"
+       style="width:380px; border:1px solid #cce5ff; background:#ffffff;">
+    <div class="card-body p-4">
+
+      <!-- Logo / wordmark -->
+      <div class="text-center mb-4">
+        <img src="{{ url_for('static', filename='cairn-logo.png') }}"
+             alt="CAIRN" class="mb-3"
+             style="width:64px;height:64px;object-fit:contain;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.15));">
+        <h4 class="fw-bold mb-0" style="color:#1a1a2e;">CAIRN</h4>
+        <small style="color:#5a6a7a;">Incident Response Platform</small>
+      </div>
+
+      <!-- Flash messages -->
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          {% for category, message in messages %}
+            <div class="alert alert-{{ category }} py-2 small">{{ message }}</div>
+          {% endfor %}
+        {% endif %}
+      {% endwith %}
+
+      <!-- Login form -->
+      <form method="POST" action="{{ url_for('auth.login') }}">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+        <div class="mb-3">
+          <label class="form-label small fw-semibold" style="color:#5a6a7a;">Username</label>
+          <input type="text" name="username" class="form-control"
+                 style="background:#ffffff;border-color:#007ACC80;color:#1a1a2e;"
+                 placeholder="username" autocomplete="username" required>
+        </div>
+
+        <div class="mb-4">
+          <label class="form-label small fw-semibold" style="color:#5a6a7a;">Password</label>
+          <input type="password" name="password" class="form-control"
+                 style="background:#ffffff;border-color:#007ACC80;color:#1a1a2e;"
+                 placeholder="••••••••" autocomplete="current-password" required>
+        </div>
+
+        <button type="submit" class="btn w-100 fw-semibold text-white"
+                style="background:#007ACC;border-color:#007ACC;"
+                onmouseover="this.style.background='#0069b3';this.style.borderColor='#0069b3';"
+                onmouseout="this.style.background='#007ACC';this.style.borderColor='#007ACC';">
+          Sign In
+        </button>
+      </form>
+
+      {% if sso_enabled %}
+      <div class="text-center mt-3">
+        <div class="small mb-2" style="color:#5a6a7a;">or</div>
+        <a href="{{ url_for('auth.oidc_login') }}"
+           class="btn w-100 fw-semibold"
+           style="color:#007ACC;border:1px solid #007ACC;background:transparent;">
+          <i class="bi bi-microsoft me-1"></i> Sign in with SSO
+        </a>
+      </div>
+      {% endif %}
+
+    </div>
+  </div>
+</div>
+{% endblock %}

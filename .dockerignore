@@ -1,0 +1,39 @@
+# Keeps `COPY . .` in the Dockerfile from baking secrets and cruft into image layers.
+# docker-compose supplies the environment at runtime via env_file — the image
+# never needs a copy of it.
+
+# ─── Secrets ──────────────────────────────────────────────────────────────────
+.env
+.env.*
+
+# ─── Version control ──────────────────────────────────────────────────────────
+.git
+.gitignore
+.github
+
+# ─── Python build artifacts ───────────────────────────────────────────────────
+__pycache__
+*.py[cod]
+venv
+.venv
+env
+*.egg-info
+
+# ─── Local data ───────────────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+data
+*.sql
+*.sql.gz
+*.log
+
+# ─── Docs / notes — not needed at runtime ─────────────────────────────────────
+CODE_REVIEW.md
+README.md
+*.md
+
+# ─── Editor / OS ──────────────────────────────────────────────────────────────
+.DS_Store
+.idea
+.vscode

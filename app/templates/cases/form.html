@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if case else 'New' }} Case — CAIRN{% endblock %}
+{% block page_title %}{{ 'Edit ' + case.case_id if case else 'New Case' }}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-xl-10">
+    <form method="POST">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+      <div class="row g-3">
+        <!-- Left column -->
+        <div class="col-lg-8">
+
+          <!-- Core Info -->
+          <div class="card mb-3">
+            <div class="card-header bg-white fw-semibold small">Case Details</div>
+            <div class="card-body">
+              <div class="mb-3">
+                <label class="form-label small fw-semibold">Title <span class="text-danger">*</span></label>
+                <input type="text" name="title" class="form-control" value="{{ case.title if case else '' }}" placeholder="Brief descriptive title" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label small fw-semibold">Description</label>
+                <textarea name="description" class="form-control" rows="4" placeholder="What happened? What is known so far?">{{ case.description if case else '' }}</textarea>
+              </div>
+              <div class="row g-3">
+                <div class="col-md-6">
+                  <label class="form-label small fw-semibold">Severity</label>
+                  <select name="severity" class="form-select">
+                    {% for s in severities %}
+                    <option value="{{ s }}" {{ 'selected' if (case and case.severity == s) or (not case and s == 'Medium') }}>{{ s }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small fw-semibold">Status</label>
+                  <select name="status" class="form-select">
+                    {% for s in statuses %}
+                    <option value="{{ s }}" {{ 'selected' if (case and case.status == s) or (not case and s == 'New') }}>{{ s }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small fw-semibold">Case Type</label>
+                  <select name="case_type" class="form-select">
+                    <option value="">— Select type —</option>
+                    {% for t in case_types %}
+                    <option value="{{ t }}" {{ 'selected' if case and case.case_type == t }}>{{ t }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="col-md-6">
+                  <label class="form-label small fw-semibold">Lead Analyst</label>
+                  <select name="lead_analyst_id" class="form-select">
+                    <option value="">— Unassigned —</option>
+                    {% for a in analysts %}
+                    <option value="{{ a.id }}" {{ 'selected' if case and case.lead_analyst_id == a.id }}>{{ a.name }}</option>
+                    {% endfor %}
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Impact -->
+          <div class="card mb-3">
+            <div class="card-header bg-white fw-semibold small">Scope & Impact</div>
+            <div class="card-body">
+              <div class="mb-3">
+                <label class="form-label small fw-semibold">Affected Systems</label>
+                <textarea name="affected_systems" class="form-control" rows="2" placeholder="Host names, IP addresses, services…">{{ case.affected_systems if case else '' }}</textarea>
+              </div>
+              <div class="mb-3">
+                <label class="form-label small fw-semibold">Affected Users / Accounts</label>
+                <textarea name="affected_users" class="form-control" rows="2" placeholder="User accounts, departments, count…">{{ case.affected_users if case else '' }}</textarea>
+              </div>
+              <div class="mb-3">
+                <label class="form-label small fw-semibold">Estimated Impact</label>
+                <textarea name="estimated_impact" class="form-control" rows="2" placeholder="Business impact, data at risk, financial exposure…">{{ case.estimated_impact if case else '' }}</textarea>
+              </div>
+              <div>
+                <label class="form-label small fw-semibold">Initial Attack Vector</label>
+                <textarea name="initial_vector" class="form-control" rows="2" placeholder="How did the threat actor gain initial access?">{{ case.initial_vector if case else '' }}</textarea>
+              </div>
+            </div>
+          </div>
+
+          {% if case %}
+          <!-- Status change note (edit only) -->
+          <div class="card mb-3">
+            <div class="card-header bg-white fw-semibold small">Status Change Note</div>
+            <div class="card-body">
+              <textarea name="status_note" class="form-control" rows="2" placeholder="Optional note explaining this status change (recorded in history)"></textarea>
+            </div>
+          </div>
+          {% endif %}
+
+        </div>
+
+        <!-- Right column -->
+        <div class="col-lg-4">
+          <!-- Dates -->
+          <div class="card mb-3">
+            <div class="card-header bg-white fw-semibold small">Key Dates</div>
+            <div class="card-body">
+              {% macro dt_field(label, name, val) %}
+              <div class="mb-3">
+                <label class="form-label small fw-semibold">{{ label }}</label>
+                <input type="datetime-local" name="{{ name }}" class="form-control form-control-sm"
+                       value="{{ val.strftime('%Y-%m-%dT%H:%M') if val else '' }}">
+              </div>
+              {% endmacro %}
+              {{ dt_field("Date/Time Opened", "opened_date", case.opened_date if case else none) }}
+              {{ dt_field("Date/Time Contained", "contained_date", case.contained_date if case else none) }}
+              {{ dt_field("Date/Time Eradicated", "eradicated_date", case.eradicated_date if case else none) }}
+              {{ dt_field("Date/Time Closed", "closed_date", case.closed_date if case else none) }}
+            </div>
+          </div>
+
+          <!-- Flags -->
+          <div class="card mb-3">
+            <div class="card-header bg-white fw-semibold small">Flags</div>
+            <div class="card-body">
+              <div class="form-check mb-2">
+                <input class="form-check-input" type="checkbox" name="escalated" id="escalated"
+                       {{ 'checked' if case and case.escalated }}>
+                <label class="form-check-label small" for="escalated">
+                  <i class="bi bi-arrow-up-circle text-warning"></i> Escalated
+                </label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="board_flagged" id="board_flagged"
+                       {{ 'checked' if case and case.board_flagged }}>
+                <label class="form-check-label small" for="board_flagged">
+                  <i class="bi bi-flag text-dark"></i> Board Flagged
+                </label>
+              </div>
+            </div>
+          </div>
+
+          {% if current_user.is_admin and case %}
+          <!-- Danger zone -->
+          <div class="card border-danger mb-3">
+            <div class="card-header bg-white text-danger fw-semibold small">Danger Zone</div>
+            <div class="card-body">
+              <button type="submit"
+                      class="btn btn-outline-danger btn-sm w-100"
+                      formaction="{{ url_for('cases.delete_case', case_id_int=case.id) }}"
+                      formmethod="post"
+                      onclick="return confirm('Permanently delete {{ case.case_id }}? This cannot be undone.')">
+                <i class="bi bi-trash"></i> Delete Case
+              </button>
+            </div>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-danger px-4">
+          {{ 'Update Case' if case else 'Create Case' }}
+        </button>
+        <a href="{{ url_for('cases.detail', case_id_int=case.id) if case else url_for('cases.list_cases') }}"
+           class="btn btn-outline-secondary">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+{% block title %}Alert {{ alert.external_id[-12:] }} — CAIRN{% endblock %}
+{% block page_title %}
+  <span class="badge bg-{{ alert.source_color }} me-2" style="font-size:.65rem;vertical-align:middle">{{ alert.source_label }}</span>
+  Alert Detail
+{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <a href="{{ url_for('alerts.list_alerts', status=alert.status) }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left"></i> Back to Queue
+  </a>
+  <div class="d-flex gap-2">
+    {% if alert.status in ('new','reviewing') and current_user.is_analyst %}
+    <button class="btn btn-sm btn-success" data-bs-toggle="modal" data-bs-target="#promoteModal">
+      <i class="bi bi-arrow-up-circle"></i> Promote to Case
+    </button>
+    <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#linkModal">
+      <i class="bi bi-link-45deg"></i> Link to Case
+    </button>
+    <button class="btn btn-sm btn-outline-warning" data-bs-toggle="modal" data-bs-target="#dismissModal">
+      <i class="bi bi-x-circle"></i> Dismiss
+    </button>
+    {% endif %}
+  </div>
+</div>
+
+<div class="row g-3">
+
+  {# ── Left column: metadata ─────────────────────────────────────────────── #}
+  <div class="col-lg-4">
+
+    <div class="card mb-3">
+      <div class="card-body">
+        <div class="d-flex justify-content-between mb-2">
+          <span class="badge bg-{{ alert.severity_color }} fs-6">{{ alert.severity_name or 'Unknown' }}</span>
+          <span class="badge bg-{{ alert.status_color }}">{{ alert.status }}</span>
+        </div>
+        {% if alert.severity %}
+        <div class="small text-muted mb-1">Severity Score: <strong>{{ alert.severity }}</strong></div>
+        {% endif %}
+
+        <div class="section-header mt-3">Detection</div>
+        <table class="table table-sm table-borderless mb-0 small">
+          <tr><td class="text-muted" style="width:40%">Tactic</td>
+              <td>{{ alert.tactic or '—' }}</td></tr>
+          <tr><td class="text-muted">Technique</td>
+              <td>{{ alert.technique or '—' }}
+                {% if alert.technique_id %}
+                <a href="https://attack.mitre.org/techniques/{{ alert.technique_id }}/"
+                   target="_blank" class="ms-1 small">{{ alert.technique_id }} ↗</a>
+                {% endif %}
+              </td></tr>
+          <tr><td class="text-muted">Objective</td>
+              <td>{{ alert.objective or '—' }}</td></tr>
+          <tr><td class="text-muted">Scenario</td>
+              <td>{{ alert.scenario or '—' }}</td></tr>
+        </table>
+
+        <div class="section-header mt-3">Host / User</div>
+        <table class="table table-sm table-borderless mb-0 small">
+          <tr><td class="text-muted" style="width:40%">
+                {% if alert.source == 'proofpoint' %}Sender{% else %}Hostname{% endif %}
+              </td>
+              <td>{{ alert.host_hostname or '—' }}</td></tr>
+          <tr><td class="text-muted">IP</td>
+              <td>{{ alert.host_ip or '—' }}</td></tr>
+          <tr><td class="text-muted">Platform</td>
+              <td>{{ alert.host_platform or '—' }}</td></tr>
+          <tr><td class="text-muted">
+                {% if alert.source == 'proofpoint' %}Recipient{% else %}Username{% endif %}
+              </td>
+              <td>{{ alert.username or '—' }}</td></tr>
+        </table>
+
+        <div class="section-header mt-3">Timestamps</div>
+        <table class="table table-sm table-borderless mb-0 small">
+          <tr><td class="text-muted" style="width:40%">Detected</td>
+              <td>{{ alert.cs_created_at.strftime('%Y-%m-%d %H:%M UTC') if alert.cs_created_at else '—' }}</td></tr>
+          <tr><td class="text-muted">Fetched</td>
+              <td>{{ alert.fetched_at.strftime('%Y-%m-%d %H:%M UTC') if alert.fetched_at else '—' }}</td></tr>
+          <tr><td class="text-muted">Reviewed</td>
+              <td>{{ alert.reviewed_at.strftime('%Y-%m-%d %H:%M UTC') if alert.reviewed_at else '—' }}</td></tr>
+          {% if alert.reviewed_by %}
+          <tr><td class="text-muted">By</td>
+              <td>{{ alert.reviewed_by.name }}</td></tr>
+          {% endif %}
+        </table>
+
+        {% if alert.case %}
+        <div class="section-header mt-3">Linked Case</div>
+        <a href="{{ url_for('cases.detail', case_id_int=alert.case.id) }}" class="fw-semibold">
+          {{ alert.case.case_id }} — {{ alert.case.title }}
+        </a>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-body small">
+        <div class="text-muted mb-1">{{ alert.source_label }} Alert ID</div>
+        <code class="user-select-all" style="word-break:break-all">{{ alert.external_id }}</code>
+      </div>
+    </div>
+
+  </div>
+
+  {# ── Right column: description + notes + raw ───────────────────────────── #}
+  <div class="col-lg-8">
+
+    <div class="card mb-3">
+      <div class="card-header fw-semibold small">
+        {% if alert.source == 'proofpoint' %}Subject / URL{% else %}Description{% endif %}
+      </div>
+      <div class="card-body small" style="white-space:pre-wrap">{{ alert.description or 'No description provided.' }}</div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-header fw-semibold small">Analyst Notes</div>
+      <div class="card-body">
+        {% if alert.status in ('new','reviewing') and current_user.is_analyst %}
+        <form method="POST" action="{{ url_for('alerts.review', alert_id=alert.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <textarea name="notes" class="form-control form-control-sm mb-2" rows="4"
+                    placeholder="Add investigation notes…">{{ alert.notes or '' }}</textarea>
+          <button type="submit" class="btn btn-sm btn-primary">Save &amp; Mark Reviewing</button>
+        </form>
+        {% else %}
+        <p class="small mb-0" style="white-space:pre-wrap">{{ alert.notes or 'No notes.' }}</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header fw-semibold small d-flex justify-content-between">
+        Raw {{ alert.source_label }} Payload
+        <button class="btn btn-xs btn-outline-secondary btn-sm py-0 px-2"
+                type="button" data-bs-toggle="collapse" data-bs-target="#rawJson">
+          Toggle
+        </button>
+      </div>
+      <div class="collapse" id="rawJson">
+        <div class="card-body p-0">
+          <pre class="p-3 mb-0 small" style="max-height:400px;overflow:auto;background:var(--c-body-bg);border-radius:0 0 8px 8px">{{ raw | tojson(indent=2) }}</pre>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+{% if current_user.is_analyst %}
+<div class="modal fade" id="promoteModal" tabindex="-1">
+  <div class="modal-dialog">
+    <form method="POST" action="{{ url_for('alerts.promote') }}" class="modal-content">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="alert_ids" value="{{ alert.id }}">
+      <div class="modal-header"><h5 class="modal-title">Promote to New Case</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">Case Title <span class="text-danger">*</span></label>
+          <input type="text" name="title" class="form-control" required
+                 value="{% if alert.tactic %}{{ alert.tactic }}{% if alert.host_hostname %} — {{ alert.host_hostname }}{% endif %}{% endif %}">
+        </div>
+        <div class="row g-2">
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Severity</label>
+            <select name="severity" class="form-select">
+              {% for s in ["Critical","High","Medium","Low","Informational"] %}
+              <option value="{{ s }}" {% if s == alert.severity_name %}selected{% endif %}>{{ s }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Case Type</label>
+            <input type="text" name="case_type" class="form-control" placeholder="e.g. Phishing">
+          </div>
+        </div>
+        <div class="mt-3">
+          <label class="form-label small fw-semibold">Description</label>
+          <textarea name="description" class="form-control" rows="3"
+                    placeholder="Leave blank to auto-generate"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-success btn-sm">Create Case</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal fade" id="linkModal" tabindex="-1">
+  <div class="modal-dialog">
+    <form method="POST" action="{{ url_for('alerts.link_to_case') }}" class="modal-content">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="alert_ids" value="{{ alert.id }}">
+      <div class="modal-header"><h5 class="modal-title">Link to Existing Case</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <label class="form-label small fw-semibold">Case ID (numeric) <span class="text-danger">*</span></label>
+        <input type="number" name="case_id" class="form-control" required min="1">
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-primary btn-sm">Link</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal fade" id="dismissModal" tabindex="-1">
+  <div class="modal-dialog">
+    <form method="POST" action="{{ url_for('alerts.dismiss', alert_id=alert.id) }}" class="modal-content">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="modal-header"><h5 class="modal-title">Dismiss Alert</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <p class="small text-muted">Provide a brief reason for dismissal.</p>
+        <textarea name="notes" class="form-control" rows="3" placeholder="Reason…"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-warning btn-sm">Dismiss</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endif %}
+
+{% endblock %}

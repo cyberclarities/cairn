@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}IOCs — CAIRN{% endblock %}
+{% block page_title %}IOCs{% endblock %}
+
+{% block content %}
+<!-- Filters -->
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <form method="GET" class="row g-2 align-items-end">
+      <div class="col-md-3">
+        <input type="text" name="search" class="form-control form-control-sm" placeholder="Search value, source, notes, case ID…" value="{{ search }}">
+      </div>
+      <div class="col-md-2">
+        <select name="ioc_type" class="form-select form-select-sm">
+          <option value="">All Types</option>
+          {% for t in ioc_types %}
+          <option value="{{ t }}" {% if filter_ioc_type == t %}selected{% endif %}>{{ t }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <select name="status" class="form-select form-select-sm">
+          <option value="">All Statuses</option>
+          {% for s in statuses %}
+          <option value="{{ s }}" {% if filter_status == s %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <select name="confidence" class="form-select form-select-sm">
+          <option value="">All Confidence</option>
+          {% for c in confidences %}
+          <option value="{{ c }}" {% if filter_confidence == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <select name="case_state" class="form-select form-select-sm">
+          <option value="">Open &amp; Closed Cases</option>
+          <option value="open" {% if filter_case_state == 'open' %}selected{% endif %}>Open Cases Only</option>
+          <option value="closed" {% if filter_case_state == 'closed' %}selected{% endif %}>Closed Cases Only</option>
+        </select>
+      </div>
+      <div class="col-md-1 d-flex gap-2">
+        <button type="submit" class="btn btn-sm btn-primary flex-fill">Filter</button>
+        <a href="{{ url_for('iocs.list_iocs') }}" class="btn btn-sm btn-outline-secondary" title="Clear filters"><i class="bi bi-x-lg"></i></a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header bg-white">
+    <span class="fw-semibold small">{{ iocs|length }} indicator{{ 's' if iocs|length != 1 }}</span>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead>
+          <tr>
+            <th class="ps-3">Case</th>
+            <th>Type</th>
+            <th>Value</th>
+            <th>Confidence</th>
+            <th>Status</th>
+            <th>Source</th>
+            <th>Last Seen</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ioc in iocs %}
+          <tr onclick="location.href='{{ url_for('cases.detail', case_id_int=ioc.case_id) }}#iocs'" style="cursor:pointer;">
+            <td class="ps-3">
+              <span class="fw-semibold small">{{ ioc.case.case_id }}</span>
+              <span class="badge bg-{{ ioc.case.status_color }} ms-1">{{ ioc.case.status }}</span>
+              <div class="text-muted small text-truncate" style="max-width:220px;">{{ ioc.case.title }}</div>
+            </td>
+            <td><span class="badge bg-secondary">{{ ioc.ioc_type or '—' }}</span></td>
+            <td><code class="small">{{ ioc.value }}</code></td>
+            <td><span class="badge bg-{{ ioc.confidence_color }}">{{ ioc.confidence }}</span></td>
+            <td>
+              <span class="badge bg-{{ ioc.status_color }}">{{ ioc.status }}</span>
+              {% if ioc.case_is_closed %}<span class="badge bg-dark ms-1">Case Closed</span>{% endif %}
+            </td>
+            <td class="small text-muted">{{ ioc.source or '—' }}</td>
+            <td class="small text-muted">{{ ioc.last_seen.strftime('%Y-%m-%d') if ioc.last_seen else '—' }}</td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="7" class="text-center text-muted py-5">
+              No IOCs match these filters.
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

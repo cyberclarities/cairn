@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Restore Complete — CAIRN{% endblock %}
+{% block page_title %}Database Restore{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center mt-5">
+  <div class="col-md-5 text-center">
+    <div class="card shadow-sm" style="border-color: var(--c-card-border);">
+      <div class="card-body py-5 px-4">
+
+        <div class="mb-3" style="font-size:3rem; color:#00C853;">
+          <i class="bi bi-check-circle-fill"></i>
+        </div>
+
+        <h4 class="fw-bold mb-1" style="color: var(--c-text);">Restore Complete</h4>
+        <p class="text-muted small mb-4">
+          The database has been restored successfully.<br>
+          All data now reflects the uploaded dump.
+        </p>
+
+        <div class="d-flex gap-2 justify-content-center">
+          <a href="{{ url_for('dashboard.index') }}" class="btn btn-sm fw-semibold text-white"
+             style="background:#007ACC; border-color:#007ACC;">
+            <i class="bi bi-speedometer2 me-1"></i> Go to Dashboard
+          </a>
+          <a href="{{ url_for('settings.index') }}#database" class="btn btn-sm btn-outline-secondary">
+            <i class="bi bi-gear me-1"></i> Back to Settings
+          </a>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

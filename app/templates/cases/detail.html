@@ -1,0 +1,579 @@
+{% extends "base.html" %}
+{% block title %}{{ case.case_id }} — CAIRN{% endblock %}
+{% block page_title %}{{ case.case_id }}: {{ case.title }}{% endblock %}
+
+{% block extra_head %}
+<style>
+  .nav-tabs .nav-link { font-size: 0.82rem; }
+  .field-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: #6c757d; font-weight: 600; }
+  .field-value { font-size: 0.9rem; }
+  code { background: #f6f8fa; padding: 0.1em 0.35em; border-radius: 4px; font-size: 0.8rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<!-- Header Bar -->
+<div class="d-flex align-items-center gap-3 mb-3 flex-wrap">
+  <span class="badge bg-{{ case.severity_color }} fs-6">{{ case.severity }}</span>
+  <span class="badge bg-{{ case.status_color }} fs-6">{{ case.status }}</span>
+  {% if case.escalated %}<span class="badge bg-warning text-dark"><i class="bi bi-arrow-up-circle"></i> Escalated</span>{% endif %}
+  {% if case.board_flagged %}<span class="badge bg-dark"><i class="bi bi-flag"></i> Board Flagged</span>{% endif %}
+  {% if case.case_type %}<span class="badge bg-light text-dark border">{{ case.case_type }}</span>{% endif %}
+  <div class="ms-auto d-flex gap-2">
+    {% if current_user.is_analyst %}
+    <a href="{{ url_for('cases.edit_case', case_id_int=case.id) }}" class="btn btn-outline-secondary btn-sm">
+      <i class="bi bi-pencil"></i> Edit Case
+    </a>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Summary cards -->
+<div class="row g-2 mb-3">
+  {% for label, val in [
+    ("Opened", case.opened_date.strftime('%Y-%m-%d %H:%M') if case.opened_date else '—'),
+    ("Contained", case.contained_date.strftime('%Y-%m-%d') if case.contained_date else '—'),
+    ("Closed", case.closed_date.strftime('%Y-%m-%d') if case.closed_date else '—'),
+    ("Lead Analyst", case.lead_analyst.name if case.lead_analyst else '—'),
+  ] %}
+  <div class="col-6 col-md-3">
+    <div class="card p-2 text-center">
+      <div class="field-label">{{ label }}</div>
+      <div class="fw-semibold small mt-1">{{ val }}</div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- Tab navigation -->
+<ul class="nav nav-tabs mb-0" id="caseTabs" role="tablist">
+  {% for tid, tlabel, icon in [
+    ("overview","Overview","bi-info-circle"),
+    ("iocs","IOCs (" + iocs|length|string + ")","bi-bug"),
+    ("evidence","Evidence (" + evidence_items|length|string + ")","bi-archive"),
+    ("timeline","Timeline (" + timeline_events|length|string + ")","bi-clock-history"),
+    ("audit","Audit Log","bi-journal-text"),
+  ] %}
+  <li class="nav-item">
+    <button class="nav-link {% if loop.first %}active{% endif %}" id="{{ tid }}-tab"
+            data-bs-toggle="tab" data-bs-target="#{{ tid }}" type="button">
+      <i class="bi {{ icon }}"></i> {{ tlabel }}
+    </button>
+  </li>
+  {% endfor %}
+</ul>
+
+<div class="tab-content border border-top-0 rounded-bottom bg-white p-3" id="caseTabsContent">
+
+  <!-- OVERVIEW TAB -->
+  <div class="tab-pane fade show active" id="overview">
+    <div class="row g-4">
+      <div class="col-md-6">
+        <div class="section-header">Description</div>
+        <p class="small">{{ case.description or '—' }}</p>
+
+        <div class="section-header mt-3">Affected Systems</div>
+        <p class="small" style="white-space:pre-wrap;">{{ case.affected_systems or '—' }}</p>
+
+        <div class="section-header mt-3">Affected Users / Accounts</div>
+        <p class="small" style="white-space:pre-wrap;">{{ case.affected_users or '—' }}</p>
+      </div>
+      <div class="col-md-6">
+        <div class="section-header">Estimated Impact</div>
+        <p class="small" style="white-space:pre-wrap;">{{ case.estimated_impact or '—' }}</p>
+
+        <div class="section-header mt-3">Initial Attack Vector</div>
+        <p class="small" style="white-space:pre-wrap;">{{ case.initial_vector or '—' }}</p>
+
+        <div class="section-header mt-3">Status History</div>
+        <div class="timeline-line">
+          {% for h in status_history %}
+          <div class="d-flex gap-2 mb-2">
+            <div class="timeline-dot bg-secondary"></div>
+            <div>
+              <small class="text-muted">{{ h.recorded_at.strftime('%Y-%m-%d %H:%M') }} — {{ h.recorded_by.name if h.recorded_by else 'System' }}</small><br>
+              <small>
+                {% if h.old_status %}{{ h.old_status }} → {% endif %}<strong>{{ h.new_status }}</strong>
+                {% if h.notes %} — {{ h.notes }}{% endif %}
+              </small>
+            </div>
+          </div>
+          {% else %}
+          <small class="text-muted">No history.</small>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- IOCs TAB -->
+  <div class="tab-pane fade" id="iocs">
+    {% if current_user.is_analyst %}
+    <button class="btn btn-sm btn-outline-danger mb-3" data-bs-toggle="modal" data-bs-target="#addIocModal">
+      <i class="bi bi-plus-lg"></i> Add IOC
+    </button>
+    {% endif %}
+
+    {% if iocs %}
+    <div class="table-responsive">
+      <table class="table table-sm table-hover">
+        <thead><tr>
+          <th>Type</th><th>Value</th><th>Confidence</th><th>Status</th><th>Source</th><th>First Seen</th><th>Last Seen</th>
+          {% if current_user.is_analyst %}<th></th>{% endif %}
+        </tr></thead>
+        <tbody>
+        {% for ioc in iocs %}
+        <tr>
+          <td><span class="badge bg-secondary">{{ ioc.ioc_type }}</span></td>
+          <td><code>{{ ioc.value }}</code></td>
+          <td><span class="badge bg-{{ ioc.confidence_color }}">{{ ioc.confidence }}</span></td>
+          <td>
+            <span class="badge bg-{{ ioc.status_color }}">{{ ioc.status }}</span>
+            {% if ioc.case_is_closed %}<span class="badge bg-dark ms-1">Case Closed</span>{% endif %}
+          </td>
+          <td class="small text-muted">{{ ioc.source or '—' }}</td>
+          <td class="small text-muted">{{ ioc.first_seen.strftime('%Y-%m-%d') if ioc.first_seen else '—' }}</td>
+          <td class="small text-muted">{{ ioc.last_seen.strftime('%Y-%m-%d') if ioc.last_seen else '—' }}</td>
+          {% if current_user.is_analyst %}
+          <td class="text-end">
+            <button class="btn btn-xs btn-sm btn-outline-secondary py-0 px-2"
+                    onclick="openEditIoc({{ ioc.id }},'{{ ioc.ioc_type }}','{{ ioc.value|e }}','{{ ioc.confidence }}','{{ ioc.status }}','{{ ioc.source|default('')|e }}','{{ ioc.notes|default('')|e }}')">
+              <i class="bi bi-pencil"></i>
+            </button>
+            <form method="POST" action="{{ url_for('iocs.delete_ioc', case_id_int=case.id, ioc_id=ioc.id) }}"
+                  class="d-inline" onsubmit="return confirm('Delete this IOC?')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="btn btn-xs btn-sm btn-outline-danger py-0 px-2"><i class="bi bi-trash"></i></button>
+            </form>
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="text-muted small">No IOCs recorded yet.</p>
+    {% endif %}
+  </div>
+
+  <!-- EVIDENCE TAB -->
+  <div class="tab-pane fade" id="evidence">
+    {% if current_user.is_analyst %}
+    <button class="btn btn-sm btn-outline-danger mb-3" data-bs-toggle="modal" data-bs-target="#addEvidenceModal">
+      <i class="bi bi-plus-lg"></i> Log Evidence
+    </button>
+    {% endif %}
+
+    {% if evidence_items %}
+    <div class="table-responsive">
+      <table class="table table-sm table-hover">
+        <thead><tr>
+          <th>Evidence ID</th><th>Name</th><th>Type</th><th>Collected By</th><th>Date</th><th>Status</th><th>SHA256</th>
+          {% if current_user.is_analyst %}<th></th>{% endif %}
+        </tr></thead>
+        <tbody>
+        {% for ev in evidence_items %}
+        <tr>
+          <td class="fw-semibold small">{{ ev.evidence_id }}</td>
+          <td>{{ ev.name }}</td>
+          <td class="small text-muted">{{ ev.evidence_type or '—' }}</td>
+          <td class="small text-muted">{{ ev.collected_by or '—' }}</td>
+          <td class="small text-muted">{{ ev.collection_date.strftime('%Y-%m-%d') if ev.collection_date else '—' }}</td>
+          <td><span class="badge bg-{{ ev.status_color }}">{{ ev.status }}</span></td>
+          <td><code class="small">{{ ev.hash_sha256[:16] + '…' if ev.hash_sha256 else '—' }}</code></td>
+          {% if current_user.is_analyst %}
+          <td class="text-end">
+            <button class="btn btn-xs btn-sm btn-outline-secondary py-0 px-2"
+                    data-bs-toggle="collapse" data-bs-target="#ev-detail-{{ ev.id }}">
+              <i class="bi bi-chevron-down"></i>
+            </button>
+            <form method="POST" action="{{ url_for('evidence.delete_evidence', case_id_int=case.id, ev_id=ev.id) }}"
+                  class="d-inline" onsubmit="return confirm('Delete this evidence record?')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="btn btn-xs btn-sm btn-outline-danger py-0 px-2"><i class="bi bi-trash"></i></button>
+            </form>
+          </td>
+          {% endif %}
+        </tr>
+        <tr class="collapse" id="ev-detail-{{ ev.id }}">
+          <td colspan="{{ 8 if current_user.is_analyst else 7 }}" class="bg-light">
+            <div class="p-2 small">
+              <div class="row g-2">
+                <div class="col-md-6"><strong>Description:</strong><br>{{ ev.description or '—' }}</div>
+                <div class="col-md-6"><strong>Source System:</strong> {{ ev.source_system or '—' }}<br>
+                  <strong>Storage:</strong> {{ ev.storage_location or '—' }}<br>
+                  <strong>MD5:</strong> <code>{{ ev.hash_md5 or '—' }}</code><br>
+                  <strong>SHA256:</strong> <code>{{ ev.hash_sha256 or '—' }}</code>
+                </div>
+                <div class="col-12"><strong>Chain of Custody:</strong><br>
+                  <pre class="mb-0" style="white-space:pre-wrap;font-size:0.8rem;">{{ ev.chain_of_custody or '—' }}</pre>
+                </div>
+              </div>
+              {% if current_user.is_analyst %}
+              <form method="POST" action="{{ url_for('evidence.add_custody_entry', case_id_int=case.id, ev_id=ev.id) }}" class="mt-2 d-flex gap-2">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="text" name="custody_note" class="form-control form-control-sm" placeholder="Add chain-of-custody note…">
+                <button class="btn btn-sm btn-outline-primary">Add</button>
+              </form>
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="text-muted small">No evidence logged yet.</p>
+    {% endif %}
+  </div>
+
+  <!-- TIMELINE TAB -->
+  <div class="tab-pane fade" id="timeline">
+    {% if current_user.is_analyst %}
+    <button class="btn btn-sm btn-outline-danger mb-3" data-bs-toggle="modal" data-bs-target="#addEventModal">
+      <i class="bi bi-plus-lg"></i> Add Event
+    </button>
+    {% endif %}
+
+    {% if timeline_events %}
+    <div class="timeline-line">
+      {% for ev in timeline_events %}
+      <div class="d-flex gap-3 mb-4">
+        <div class="timeline-dot bg-{{ {'High':'danger','Medium':'warning','Low':'secondary'}.get(ev.confidence,'secondary') }}"></div>
+        <div class="flex-grow-1">
+          <div class="d-flex align-items-center gap-2 flex-wrap mb-1">
+            <span class="fw-semibold small">{{ ev.event_datetime.strftime('%Y-%m-%d %H:%M') }}</span>
+            {% if ev.mitre_tactic %}<span class="badge bg-dark">{{ ev.mitre_tactic }}</span>{% endif %}
+            {% if ev.mitre_technique_id %}<span class="badge bg-secondary"><a href="https://attack.mitre.org/techniques/{{ ev.mitre_technique_id.replace('.','/')}}/" target="_blank" class="text-white text-decoration-none">{{ ev.mitre_technique_id }}</a></span>{% endif %}
+            {% if ev.mitre_technique %}<span class="text-muted small">{{ ev.mitre_technique }}</span>{% endif %}
+            <span class="badge bg-{{ ev.confidence_color }}">{{ ev.confidence }}</span>
+          </div>
+          <p class="mb-1 small">{{ ev.description }}</p>
+          {% if ev.source_artifact %}<small class="text-muted"><i class="bi bi-file-text"></i> {{ ev.source_artifact }}</small>{% endif %}
+          {% if ev.ioc_reference %}<br><small class="text-muted"><i class="bi bi-bug"></i> {{ ev.ioc_reference }}</small>{% endif %}
+          {% if current_user.is_analyst %}
+          <div class="mt-1">
+            <form method="POST" action="{{ url_for('timeline.delete_event', case_id_int=case.id, event_id=ev.id) }}"
+                  class="d-inline" onsubmit="return confirm('Delete this event?')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="btn btn-link btn-sm text-danger p-0 small"><i class="bi bi-trash"></i> Delete</button>
+            </form>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-muted small">No timeline events recorded yet.</p>
+    {% endif %}
+  </div>
+
+  <!-- AUDIT LOG TAB -->
+  <div class="tab-pane fade" id="audit">
+    <div class="table-responsive">
+      <table class="table table-sm">
+        <thead><tr><th>When</th><th>By</th><th>Entity</th><th>Field</th><th>Old Value</th><th>New Value</th></tr></thead>
+        <tbody>
+        {% for a in audit_entries %}
+        <tr>
+          <td class="small text-muted">{{ a.changed_at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td class="small">{{ a.changed_by.name if a.changed_by else '—' }}</td>
+          <td class="small"><span class="badge bg-light text-dark border">{{ a.entity_type }}</span></td>
+          <td class="small">{{ a.field_name }}</td>
+          <td class="small text-muted">{{ a.old_value or '—' }}</td>
+          <td class="small">{{ a.new_value or '—' }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-muted text-center py-3">No audit entries.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div><!-- end tab-content -->
+
+
+<!-- ADD IOC MODAL -->
+<div class="modal fade" id="addIocModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <form method="POST" action="{{ url_for('iocs.add_ioc', case_id_int=case.id) }}" class="modal-content">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="modal-header"><h5 class="modal-title">Add IOC</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div class="row g-3">
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">IOC Type</label>
+            <select name="ioc_type" class="form-select form-select-sm" required>
+              {% for t in ioc_types %}<option>{{ t }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="col-md-8">
+            <label class="form-label small fw-semibold">Value <span class="text-danger">*</span></label>
+            <input type="text" name="value" class="form-control form-control-sm" placeholder="IP, domain, hash, URL…" required>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Confidence</label>
+            <select name="confidence" class="form-select form-select-sm">
+              <option>High</option><option selected>Medium</option><option>Low</option>
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Status</label>
+            <select name="status" class="form-select form-select-sm">
+              <option selected>Active</option><option>Resolved</option><option>False Positive</option>
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Source</label>
+            <input type="text" name="source" class="form-control form-control-sm" placeholder="EDR, threat intel, log…">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">First Seen</label>
+            <input type="datetime-local" name="first_seen" class="form-control form-control-sm">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Last Seen</label>
+            <input type="datetime-local" name="last_seen" class="form-control form-control-sm">
+          </div>
+          <div class="col-12">
+            <label class="form-label small fw-semibold">Description</label>
+            <textarea name="description" class="form-control form-control-sm" rows="2" placeholder="Context…"></textarea>
+          </div>
+          <div class="col-12">
+            <label class="form-label small fw-semibold">Notes</label>
+            <textarea name="notes" class="form-control form-control-sm" rows="2"></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer"><button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-danger btn-sm">Add IOC</button></div>
+    </form>
+  </div>
+</div>
+
+<!-- EDIT IOC MODAL -->
+<div class="modal fade" id="editIocModal" tabindex="-1">
+  <div class="modal-dialog">
+    <form method="POST" id="editIocForm" class="modal-content">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="modal-header"><h5 class="modal-title">Edit IOC</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">IOC Type</label>
+          <select name="ioc_type" id="editIocType" class="form-select form-select-sm">
+            {% for t in ioc_types %}<option>{{ t }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">Value</label>
+          <input type="text" name="value" id="editIocValue" class="form-control form-control-sm" required>
+        </div>
+        <div class="row g-2">
+          <div class="col-6">
+            <label class="form-label small fw-semibold">Confidence</label>
+            <select name="confidence" id="editIocConfidence" class="form-select form-select-sm">
+              <option>High</option><option>Medium</option><option>Low</option>
+            </select>
+          </div>
+          <div class="col-6">
+            <label class="form-label small fw-semibold">Status</label>
+            <select name="status" id="editIocStatus" class="form-select form-select-sm">
+              <option>Active</option><option>Resolved</option><option>False Positive</option>
+            </select>
+          </div>
+        </div>
+        <div class="mt-2">
+          <label class="form-label small fw-semibold">Source</label>
+          <input type="text" name="source" id="editIocSource" class="form-control form-control-sm">
+        </div>
+        <div class="mt-2">
+          <label class="form-label small fw-semibold">Notes</label>
+          <textarea name="notes" id="editIocNotes" class="form-control form-control-sm" rows="2"></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-danger btn-sm">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ADD EVIDENCE MODAL -->
+<div class="modal fade" id="addEvidenceModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <form method="POST" action="{{ url_for('evidence.add_evidence', case_id_int=case.id) }}" class="modal-content">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="modal-header"><h5 class="modal-title">Log Evidence</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Name <span class="text-danger">*</span></label>
+            <input type="text" name="name" class="form-control form-control-sm" placeholder="Descriptive name" required>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Evidence Type</label>
+            <select name="evidence_type" class="form-select form-select-sm">
+              <option value="">— Select —</option>
+              {% for t in evidence_types %}<option>{{ t }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="col-12">
+            <label class="form-label small fw-semibold">Description</label>
+            <textarea name="description" class="form-control form-control-sm" rows="2"></textarea>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Source System</label>
+            <input type="text" name="source_system" class="form-control form-control-sm" placeholder="Hostname, device, service…">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label small fw-semibold">Collected By</label>
+            <input type="text" name="collected_by" class="form-control form-control-sm" value="{{ current_user.name }}">
+          </div>
+          <div class="col-md-3">
+            <label class="form-label small fw-semibold">Collection Date</label>
+            <input type="date" name="collection_date" class="form-control form-control-sm">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">MD5 Hash</label>
+            <input type="text" name="hash_md5" class="form-control form-control-sm font-monospace" placeholder="32-char hex">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">SHA256 Hash</label>
+            <input type="text" name="hash_sha256" class="form-control form-control-sm font-monospace" placeholder="64-char hex">
+          </div>
+          <div class="col-md-8">
+            <label class="form-label small fw-semibold">Storage Location</label>
+            <input type="text" name="storage_location" class="form-control form-control-sm" placeholder="Path, share, S3 bucket…">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Status</label>
+            <select name="status" class="form-select form-select-sm">
+              <option>Collected</option><option>In Analysis</option><option>Analyzed</option><option>Archived</option>
+            </select>
+          </div>
+          <div class="col-12">
+            <label class="form-label small fw-semibold">Initial Chain-of-Custody Note</label>
+            <textarea name="chain_of_custody" class="form-control form-control-sm" rows="2" placeholder="Who collected it, from where, and when…"></textarea>
+          </div>
+          <div class="col-12">
+            <label class="form-label small fw-semibold">Notes</label>
+            <textarea name="notes" class="form-control form-control-sm" rows="2"></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-danger btn-sm">Log Evidence</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- ADD TIMELINE EVENT MODAL -->
+<div class="modal fade" id="addEventModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <form method="POST" action="{{ url_for('timeline.add_event', case_id_int=case.id) }}" class="modal-content">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="modal-header"><h5 class="modal-title">Add Timeline Event</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Event Date/Time <span class="text-danger">*</span></label>
+            <input type="datetime-local" name="event_datetime" class="form-control form-control-sm" required>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Confidence</label>
+            <select name="confidence" class="form-select form-select-sm">
+              <option>High</option><option selected>Medium</option><option>Low</option>
+            </select>
+          </div>
+          <div class="col-12">
+            <label class="form-label small fw-semibold">Description <span class="text-danger">*</span></label>
+            <textarea name="description" class="form-control form-control-sm" rows="3" placeholder="What happened at this point in the incident?" required></textarea>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Source Artifact</label>
+            <input type="text" name="source_artifact" class="form-control form-control-sm" placeholder="Log file, EDR alert, memory analysis…">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Related IOC References</label>
+            <input type="text" name="ioc_reference" class="form-control form-control-sm" placeholder="IOC values or IDs…">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">MITRE Tactic</label>
+            <select name="mitre_tactic" id="mitreSelectTactic" class="form-select form-select-sm" onchange="updateTechniques()">
+              <option value="">— None —</option>
+              {% for t in mitre_tactics %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="col-md-8">
+            <label class="form-label small fw-semibold">MITRE Technique</label>
+            <select name="mitre_technique_id" id="mitreSelectTechniqueId" class="form-select form-select-sm" onchange="updateTechniqueId()">
+              <option value="">— Select tactic first —</option>
+            </select>
+            <input type="hidden" name="mitre_technique" id="mitreHiddenTechnique">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-danger btn-sm">Add Event</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+const MITRE = {{ mitre_data_json|safe }};
+
+function updateTechniques() {
+  const tactic = document.getElementById('mitreSelectTactic').value;
+  const sel = document.getElementById('mitreSelectTechniqueId');
+  sel.innerHTML = '<option value="">— Select technique —</option>';
+  if (tactic && MITRE[tactic]) {
+    MITRE[tactic].forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = t.id + ' — ' + t.name;
+      opt.dataset.name = t.name;
+      sel.appendChild(opt);
+    });
+  }
+  document.getElementById('mitreHiddenTechnique').value = '';
+}
+
+function updateTechniqueId() {
+  const sel = document.getElementById('mitreSelectTechniqueId');
+  const opt = sel.options[sel.selectedIndex];
+  document.getElementById('mitreHiddenTechnique').value = opt ? (opt.dataset.name || '') : '';
+}
+
+// Auto-activate tab from URL hash
+document.addEventListener('DOMContentLoaded', () => {
+  const hash = window.location.hash;
+  if (hash) {
+    const tab = document.querySelector(`[data-bs-target="${hash}"]`);
+    if (tab) new bootstrap.Tab(tab).show();
+  }
+});
+
+function openEditIoc(id, type, value, confidence, status, source, notes) {
+  document.getElementById('editIocForm').action = `/cases/{{ case.id }}/iocs/${id}/edit`;
+  document.getElementById('editIocType').value = type;
+  document.getElementById('editIocValue').value = value;
+  document.getElementById('editIocConfidence').value = confidence;
+  document.getElementById('editIocStatus').value = status;
+  document.getElementById('editIocSource').value = source;
+  document.getElementById('editIocNotes').value = notes;
+  new bootstrap.Modal(document.getElementById('editIocModal')).show();
+}
+</script>
+{% endblock %}

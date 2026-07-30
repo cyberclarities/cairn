@@ -1,0 +1,45 @@
+# ─── Secrets ──────────────────────────────────────────────────────────────────
+# Never commit real environment files. .env.example is the tracked template.
+.env
+.env.*
+!.env.example
+
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# ─── Database / runtime data ──────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+data/
+*.sql
+*.sql.gz
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ─── Internal review notes ───────────────────────────────────────────────────
+# Findings documents describe unpatched issues. They live in the Obsidian vault,
+# not in a repo that may become public.
+CODE_REVIEW.md
+
+# ─── Editor / OS ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

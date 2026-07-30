@@ -1,0 +1,35 @@
+{$SERVER_NAME} {
+    # 'tls internal' issues a self-signed certificate from Caddy's local CA.
+    # Fine for localhost. On a real hostname, swap this for a public ACME cert
+    # (delete the line and Caddy provisions one automatically) or point it at
+    # your internal PKI — a security console should not be teaching its users
+    # to click through certificate warnings.
+    tls internal
+
+    encode gzip
+
+    header {
+        # Defence in depth: the app sets these too, so a direct hit on the
+        # container is covered as well as traffic through this proxy.
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options    "nosniff"
+        X-Frame-Options           "DENY"
+        Referrer-Policy           "same-origin"
+        -Server
+    }
+
+    reverse_proxy web:{$PORT} {
+        transport http {
+            response_header_timeout 10m
+            read_timeout            10m
+            write_timeout           10m
+        }
+    }
+}
+
+# Port 80 is not published in docker-compose.yml, so this block only takes
+# effect once "80:80" is uncommented there. Left in place so enabling HTTP
+# is a one-line change that still redirects rather than serving plaintext.
+{$SERVER_NAME}:80 {
+    redir https://{host}{uri} permanent
+}
