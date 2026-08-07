@@ -4,7 +4,7 @@
 
 {% block content %}
 <ul class="nav nav-tabs mb-0" id="settingsTabs" role="tablist">
-  {% for tid, tlabel in [("case_type","Case Types"),("ioc_type","IOC Types"),("evidence_type","Evidence Types"),("database","Database")] %}
+  {% for tid, tlabel in [("case_type","Case Types"),("ioc_type","IOC Types"),("evidence_type","Evidence Types"),("timeline_category","Timeline Categories"),("timeline_color","Timeline Colors"),("database","Database")] %}
   <li class="nav-item">
     <button class="nav-link {% if loop.first %}active{% endif %}" id="{{ tid }}-tab"
             data-bs-toggle="tab" data-bs-target="#{{ tid }}" type="button">{{ tlabel }}</button>
@@ -14,7 +14,7 @@
 
 <div class="tab-content border border-top-0 rounded-bottom bg-white p-3" id="settingsContent">
 
-  {% for list_name in ["case_type","ioc_type","evidence_type"] %}
+  {% for list_name in ["case_type","ioc_type","evidence_type","timeline_category"] %}
   <div class="tab-pane fade {% if loop.first %}show active{% endif %}" id="{{ list_name }}">
     <div class="row justify-content-center">
       <div class="col-md-6">
@@ -53,6 +53,32 @@
     </div>
   </div>
   {% endfor %}
+
+  <!-- TIMELINE COLORS TAB — fixed 7 slots, label-only, no add/remove -->
+  <div class="tab-pane fade" id="timeline_color">
+    <div class="row justify-content-center">
+      <div class="col-md-6">
+        <p class="small text-muted">
+          Seven fixed color slots for tagging timeline events — the colors themselves aren't
+          editable, only what each one means to your team.
+        </p>
+        <div class="list-group mb-3">
+          {% for tc in timeline_colors %}
+          <div class="list-group-item d-flex align-items-center gap-2 py-2">
+            <span style="display:inline-block;width:1.1rem;height:1.1rem;border-radius:50%;background:{{ tc.hex }};flex-shrink:0;" title="{{ tc.hex }}"></span>
+            <form method="POST" action="{{ url_for('settings.rename_timeline_color', lv_id=tc.lookup.id) }}" class="d-flex gap-2 flex-grow-1">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="text" name="value" class="form-control form-control-sm" value="{{ tc.lookup.value }}" maxlength="64" required>
+              <button type="submit" class="btn btn-sm btn-outline-danger">Save</button>
+            </form>
+          </div>
+          {% else %}
+          <div class="list-group-item text-muted small">Color slots have not been initialized yet — restart the app to seed them.</div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- DATABASE TAB -->
   <div class="tab-pane fade" id="database">

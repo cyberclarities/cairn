@@ -175,7 +175,7 @@ def _poll_crowdstrike(app):
         state = _get_state("crowdstrike")
         since = _window_start(
             state,
-            default_window_seconds=app.config.get("PP_POLL_WINDOW", 900),
+            default_window_seconds=app.config.get("CS_POLL_WINDOW", 900),
             overlap_seconds=app.config.get("POLL_OVERLAP_SECONDS", 120),
         )
         try:

@@ -8,6 +8,38 @@
   .field-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: #6c757d; font-weight: 600; }
   .field-value { font-size: 0.9rem; }
   code { background: #f6f8fa; padding: 0.1em 0.35em; border-radius: 4px; font-size: 0.8rem; }
+
+  /* Alternating timeline: a centered vertical line, cards alternating left
+     and right of it, nested events staying on their ancestor's side and
+     indenting toward the centerline rather than growing off the edge. */
+  .tl2 { position: relative; padding: 0.25rem 0 0.5rem; }
+  .tl2::before {
+    content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px;
+    background: var(--c-timeline-line); transform: translateX(-50%); z-index: 0;
+  }
+  .tl2-pill {
+    position: relative; z-index: 1; width: fit-content; margin: 0.6rem auto 1rem;
+    background: var(--c-modal-header); color: #fff; font-size: 0.72rem; font-weight: 700;
+    padding: 0.25rem 0.85rem; border-radius: 999px; letter-spacing: 0.02em;
+  }
+  .tl2-row { position: relative; z-index: 1; display: flex; width: 100%; margin-bottom: 1rem; }
+  .tl2-row.side-left { justify-content: flex-end; }
+  .tl2-row.side-right { justify-content: flex-start; }
+  .tl2-card {
+    background: var(--c-card-bg); border: 1px solid var(--c-card-border);
+    border-radius: 8px; padding: 0.7rem 0.9rem; box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    min-width: 0;
+  }
+  .tl2-row.side-left .tl2-card  { border-right: 4px solid var(--tl2-color, transparent); }
+  .tl2-row.side-right .tl2-card { border-left: 4px solid var(--tl2-color, transparent); }
+  .tl2-see-more { cursor: pointer; }
+  @media (max-width: 767.98px) {
+    /* Two columns stop being readable on a phone-width viewport — collapse
+       to a single stacked column, still indented by depth. */
+    .tl2::before { left: 0.6rem; }
+    .tl2-row.side-left, .tl2-row.side-right { justify-content: flex-start; }
+    .tl2-row .tl2-card { width: auto !important; margin-left: 1.25rem !important; margin-right: 0 !important; }
+  }
 </style>
 {% endblock %}
 
@@ -181,7 +213,22 @@
           <td class="small text-muted">{{ ev.collected_by or '—' }}</td>
           <td class="small text-muted">{{ ev.collection_date.strftime('%Y-%m-%d') if ev.collection_date else '—' }}</td>
           <td><span class="badge bg-{{ ev.status_color }}">{{ ev.status }}</span></td>
-          <td><code class="small">{{ ev.hash_sha256[:16] + '…' if ev.hash_sha256 else '—' }}</code></td>
+          <td>
+            <code class="small">{{ ev.hash_sha256[:16] + '…' if ev.hash_sha256 else '—' }}</code>
+            {% if ev.hash_verified_ok is not none %}
+              {% if ev.hash_verified_ok %}
+              <i class="bi bi-shield-check text-success" title="Verified {{ ev.hash_verified_at.strftime('%Y-%m-%d %H:%M') }} UTC"></i>
+              {% else %}
+              <i class="bi bi-shield-exclamation text-danger" title="Hash mismatch as of {{ ev.hash_verified_at.strftime('%Y-%m-%d %H:%M') }} UTC"></i>
+              {% endif %}
+            {% endif %}
+            {% if ev.has_file and current_user.is_admin %}
+            <a class="btn btn-xs btn-sm btn-outline-primary py-0 px-2" title="Download (re-verifies the hash)"
+               href="{{ url_for('evidence.download_evidence', case_id_int=case.id, ev_id=ev.id) }}">
+              <i class="bi bi-download"></i>
+            </a>
+            {% endif %}
+          </td>
           {% if current_user.is_analyst %}
           <td class="text-end">
             <button class="btn btn-xs btn-sm btn-outline-secondary py-0 px-2"
@@ -205,6 +252,9 @@
                   <strong>Storage:</strong> {{ ev.storage_location or '—' }}<br>
                   <strong>MD5:</strong> <code>{{ ev.hash_md5 or '—' }}</code><br>
                   <strong>SHA256:</strong> <code>{{ ev.hash_sha256 or '—' }}</code>
+                  {% if ev.has_file %}<br>
+                  <strong>File:</strong> {{ ev.original_filename }} ({{ ev.size_bytes }} bytes, {{ ev.mime_type }})
+                  {% endif %}
                 </div>
                 <div class="col-12"><strong>Chain of Custody:</strong><br>
                   <pre class="mb-0" style="white-space:pre-wrap;font-size:0.8rem;">{{ ev.chain_of_custody or '—' }}</pre>
@@ -237,26 +287,56 @@
     </button>
     {% endif %}
 
-    {% if timeline_events %}
-    <div class="timeline-line">
-      {% for ev in timeline_events %}
-      <div class="d-flex gap-3 mb-4">
-        <div class="timeline-dot bg-{{ {'High':'danger','Medium':'warning','Low':'secondary'}.get(ev.confidence,'secondary') }}"></div>
-        <div class="flex-grow-1">
+    {% if timeline_display %}
+    <div class="tl2">
+      {% for item in timeline_display %}
+      {% if item.type == 'pill' %}
+      <div class="tl2-pill">{{ item.date.strftime('%m/%d/%Y') }}</div>
+      {% else %}
+      {% set ev = item.ev %}
+      <div class="tl2-row side-{{ item.side }}">
+        <div class="tl2-card"
+             style="width: calc(46% - {{ item.depth * 1.5 }}rem); margin-{{ 'right' if item.side == 'left' else 'left' }}: calc(4% + {{ item.depth * 1.5 }}rem);{% if ev.color_hex %} --tl2-color: {{ ev.color_hex }};{% endif %}">
+          {% if item.depth > 0 %}
+          <div class="small text-muted mb-1"><i class="bi bi-arrow-return-right"></i> under {{ ev.parent.event_datetime.strftime('%Y-%m-%d %H:%M') }} UTC — {{ ev.parent.description[:60] }}{{ '…' if ev.parent.description|length > 60 }}</div>
+          {% endif %}
+          <div class="d-flex align-items-start justify-content-between gap-2 mb-1">
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <span class="fw-semibold small">{{ ev.event_datetime.strftime('%Y-%m-%d %H:%M') }} UTC</span>
+              {% if ev.source_timezone and ev.source_timezone != 'UTC' %}<span class="text-muted small">(entered as {{ ev.source_timezone }})</span>{% endif %}
+            </div>
+            {% if current_user.is_analyst %}
+            <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2 flex-shrink-0" title="Edit event"
+                    data-event='{{ event_edit_data[ev.id]|tojson }}' onclick="openEditEvent(JSON.parse(this.dataset.event))">
+              <i class="bi bi-pencil"></i>
+            </button>
+            {% endif %}
+          </div>
           <div class="d-flex align-items-center gap-2 flex-wrap mb-1">
-            <span class="fw-semibold small">{{ ev.event_datetime.strftime('%Y-%m-%d %H:%M') }}</span>
+            {% if ev.category %}<span class="badge bg-info text-dark">{{ ev.category }}</span>{% endif %}
+            {% if ev.tag %}<span class="badge bg-light text-dark border"><i class="bi bi-tag"></i> {{ ev.tag }}</span>{% endif %}
             {% if ev.mitre_tactic %}<span class="badge bg-dark">{{ ev.mitre_tactic }}</span>{% endif %}
             {% if ev.mitre_technique_id %}<span class="badge bg-secondary"><a href="https://attack.mitre.org/techniques/{{ ev.mitre_technique_id.replace('.','/')}}/" target="_blank" class="text-white text-decoration-none">{{ ev.mitre_technique_id }}</a></span>{% endif %}
             {% if ev.mitre_technique %}<span class="text-muted small">{{ ev.mitre_technique }}</span>{% endif %}
             <span class="badge bg-{{ ev.confidence_color }}">{{ ev.confidence }}</span>
           </div>
-          <p class="mb-1 small">{{ ev.description }}</p>
-          {% if ev.source_artifact %}<small class="text-muted"><i class="bi bi-file-text"></i> {{ ev.source_artifact }}</small>{% endif %}
-          {% if ev.ioc_reference %}<br><small class="text-muted"><i class="bi bi-bug"></i> {{ ev.ioc_reference }}</small>{% endif %}
+          <p class="mb-1 small">
+            {% if ev.description|length > 220 %}
+            <span class="tl2-desc-short">{{ ev.description[:220] }}…</span>
+            <span class="tl2-desc-full d-none">{{ ev.description }}</span>
+            <a href="#" class="tl2-see-more small" onclick="return toggleDesc(this)">See more</a>
+            {% else %}
+            {{ ev.description }}
+            {% endif %}
+          </p>
+          {% if ev.source_artifact %}<div><small class="text-muted"><i class="bi bi-file-text"></i> {{ ev.source_artifact }}</small></div>{% endif %}
+          {% if ev.affected_assets_list %}<div><small class="text-muted"><i class="bi bi-hdd-network"></i> {{ ev.affected_assets_list|join(', ') }}</small></div>{% endif %}
+          {% if ev.iocs %}<div><small class="text-muted"><i class="bi bi-bug"></i> {% for i in ev.iocs %}<span class="badge bg-light text-dark border">{{ i.value }}</span>{% endfor %}</small></div>{% endif %}
+          {% if ev.ioc_reference %}<div><small class="text-muted"><i class="bi bi-bug"></i> {{ ev.ioc_reference }}</small></div>{% endif %}
           {% if current_user.is_analyst %}
           <div class="mt-1">
             <form method="POST" action="{{ url_for('timeline.delete_event', case_id_int=case.id, event_id=ev.id) }}"
-                  class="d-inline" onsubmit="return confirm('Delete this event?')">
+                  class="d-inline" onsubmit="return confirm('Delete this event?{% if ev.children.count() %} Its child events will move up under its own parent instead of being deleted.{% endif %}')">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
               <button class="btn btn-link btn-sm text-danger p-0 small"><i class="bi bi-trash"></i> Delete</button>
             </form>
@@ -264,6 +344,7 @@
           {% endif %}
         </div>
       </div>
+      {% endif %}
       {% endfor %}
     </div>
     {% else %}
@@ -406,7 +487,7 @@
 <!-- ADD EVIDENCE MODAL -->
 <div class="modal fade" id="addEvidenceModal" tabindex="-1">
   <div class="modal-dialog modal-lg">
-    <form method="POST" action="{{ url_for('evidence.add_evidence', case_id_int=case.id) }}" class="modal-content">
+    <form method="POST" action="{{ url_for('evidence.add_evidence', case_id_int=case.id) }}" class="modal-content" enctype="multipart/form-data">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <div class="modal-header"><h5 class="modal-title">Log Evidence</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
       <div class="modal-body">
@@ -426,6 +507,13 @@
             <label class="form-label small fw-semibold">Description</label>
             <textarea name="description" class="form-control form-control-sm" rows="2"></textarea>
           </div>
+          <div class="col-12">
+            <label class="form-label small fw-semibold">File</label>
+            <input type="file" name="file" class="form-control form-control-sm">
+            <div class="form-text">Uploaded here so the app can compute MD5/SHA256 itself — attaching a file
+              fills the hash fields below from the actual bytes and locks them from further manual edits.
+              Leave this blank for evidence stored elsewhere; use Storage Location for that instead.</div>
+          </div>
           <div class="col-md-6">
             <label class="form-label small fw-semibold">Source System</label>
             <input type="text" name="source_system" class="form-control form-control-sm" placeholder="Hostname, device, service…">
@@ -440,11 +528,11 @@
           </div>
           <div class="col-md-6">
             <label class="form-label small fw-semibold">MD5 Hash</label>
-            <input type="text" name="hash_md5" class="form-control form-control-sm font-monospace" placeholder="32-char hex">
+            <input type="text" name="hash_md5" class="form-control form-control-sm font-monospace" placeholder="Auto-filled if a file is attached above">
           </div>
           <div class="col-md-6">
             <label class="form-label small fw-semibold">SHA256 Hash</label>
-            <input type="text" name="hash_sha256" class="form-control form-control-sm font-monospace" placeholder="64-char hex">
+            <input type="text" name="hash_sha256" class="form-control form-control-sm font-monospace" placeholder="Auto-filled if a file is attached above">
           </div>
           <div class="col-md-8">
             <label class="form-label small fw-semibold">Storage Location</label>
@@ -482,28 +570,101 @@
       <div class="modal-header"><h5 class="modal-title">Add Timeline Event</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
       <div class="modal-body">
         <div class="row g-3">
-          <div class="col-md-6">
-            <label class="form-label small fw-semibold">Event Date/Time <span class="text-danger">*</span></label>
-            <input type="datetime-local" name="event_datetime" class="form-control form-control-sm" required>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Event Date <span class="text-danger">*</span></label>
+            <input type="date" name="event_date" class="form-control form-control-sm" required>
           </div>
-          <div class="col-md-6">
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Event Time <span class="text-danger">*</span></label>
+            <input type="time" name="event_time" class="form-control form-control-sm" required>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Timezone</label>
+            <select name="event_timezone" class="form-select form-select-sm">
+              {% for tz in timezones %}<option value="{{ tz }}" {% if tz == 'UTC' %}selected{% endif %}>{{ tz }}</option>{% endfor %}
+            </select>
+            <div class="form-text">Converted to UTC on save. Leave as UTC if that's what you're entering.</div>
+          </div>
+
+          <div class="col-12">
+            <label class="form-label small fw-semibold">Description <span class="text-danger">*</span></label>
+            <textarea name="description" class="form-control form-control-sm" rows="3" placeholder="What happened at this point in the incident?" required></textarea>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Category</label>
+            <select name="category" class="form-select form-select-sm">
+              <option value="">— None —</option>
+              {% for c in timeline_categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+            </select>
+            <div class="form-text">Managed in Settings → Timeline Categories.</div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Tag</label>
+            <input type="text" name="tag" maxlength="64" class="form-control form-control-sm" placeholder="Free-text, for sorting…">
+          </div>
+          <div class="col-md-4">
             <label class="form-label small fw-semibold">Confidence</label>
             <select name="confidence" class="form-select form-select-sm">
               <option>High</option><option selected>Medium</option><option>Low</option>
             </select>
           </div>
+
           <div class="col-12">
-            <label class="form-label small fw-semibold">Description <span class="text-danger">*</span></label>
-            <textarea name="description" class="form-control form-control-sm" rows="3" placeholder="What happened at this point in the incident?" required></textarea>
+            <label class="form-label small fw-semibold">Color</label>
+            <div class="d-flex align-items-center gap-3 flex-wrap">
+              <label class="d-flex align-items-center gap-1 small">
+                <input type="radio" name="color_slot" value="" checked> None
+              </label>
+              {% for tc in timeline_colors %}
+              <label class="d-flex align-items-center gap-1 small" title="{{ tc.label }}">
+                <input type="radio" name="color_slot" value="{{ tc.slot }}">
+                <span style="display:inline-block;width:1rem;height:1rem;border-radius:50%;background:{{ tc.hex }};border:1px solid rgba(0,0,0,.15);"></span>
+                {{ tc.label }}
+              </label>
+              {% endfor %}
+            </div>
+            <div class="form-text">Labels managed in Settings → Timeline Colors.</div>
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Parent Event</label>
+            <select name="parent_id" class="form-select form-select-sm">
+              <option value="">— None (top level) —</option>
+              {% for pe in timeline_events %}
+              <option value="{{ pe.id }}">{{ pe.event_datetime.strftime('%Y-%m-%d %H:%M') }} UTC — {{ pe.description[:50] }}{{ '…' if pe.description|length > 50 }}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">This event will be shown nested under whichever event you pick.</div>
           </div>
           <div class="col-md-6">
             <label class="form-label small fw-semibold">Source Artifact</label>
             <input type="text" name="source_artifact" class="form-control form-control-sm" placeholder="Log file, EDR alert, memory analysis…">
           </div>
+
           <div class="col-md-6">
-            <label class="form-label small fw-semibold">Related IOC References</label>
-            <input type="text" name="ioc_reference" class="form-control form-control-sm" placeholder="IOC values or IDs…">
+            <label class="form-label small fw-semibold">Affected Assets</label>
+            {% if asset_options %}
+            <select name="affected_assets" class="form-select form-select-sm" multiple size="4">
+              {% for a in asset_options %}<option value="{{ a }}">{{ a }}</option>{% endfor %}
+            </select>
+            <div class="form-text">Ctrl/Cmd-click for multiple. Pulled from this case's Affected Systems field.</div>
+            {% else %}
+            <div class="form-text">No affected systems listed on this case yet — add them via Edit Case first.</div>
+            {% endif %}
           </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Linked IOCs</label>
+            {% if iocs %}
+            <select name="ioc_ids" class="form-select form-select-sm" multiple size="4">
+              {% for i in iocs %}<option value="{{ i.id }}">{{ i.ioc_type }}: {{ i.value[:50] }}</option>{% endfor %}
+            </select>
+            <div class="form-text">Ctrl/Cmd-click for multiple.</div>
+            {% else %}
+            <div class="form-text">No IOCs logged on this case yet.</div>
+            {% endif %}
+          </div>
+
           <div class="col-md-4">
             <label class="form-label small fw-semibold">MITRE Tactic</label>
             <select name="mitre_tactic" id="mitreSelectTactic" class="form-select form-select-sm" onchange="updateTechniques()">
@@ -523,6 +684,131 @@
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
         <button type="submit" class="btn btn-danger btn-sm">Add Event</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- EDIT TIMELINE EVENT MODAL -->
+<div class="modal fade" id="editEventModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <form method="POST" id="editEventForm" class="modal-content">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="modal-header"><h5 class="modal-title">Edit Timeline Event</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div class="row g-3">
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Event Date <span class="text-danger">*</span></label>
+            <input type="date" name="event_date" id="editEventDate" class="form-control form-control-sm" required>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Event Time <span class="text-danger">*</span></label>
+            <input type="time" name="event_time" id="editEventTime" class="form-control form-control-sm" required>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Timezone</label>
+            <select name="event_timezone" id="editEventTimezone" class="form-select form-select-sm">
+              {% for tz in timezones %}<option value="{{ tz }}">{{ tz }}</option>{% endfor %}
+            </select>
+            <div class="form-text">Shown in the zone it was originally entered in — saving with no changes keeps the same UTC instant.</div>
+          </div>
+
+          <div class="col-12">
+            <label class="form-label small fw-semibold">Description <span class="text-danger">*</span></label>
+            <textarea name="description" id="editEventDescription" class="form-control form-control-sm" rows="3" required></textarea>
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Category</label>
+            <select name="category" id="editEventCategory" class="form-select form-select-sm">
+              <option value="">— None —</option>
+              {% for c in timeline_categories %}<option value="{{ c }}">{{ c }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Tag</label>
+            <input type="text" name="tag" id="editEventTag" maxlength="64" class="form-control form-control-sm">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Confidence</label>
+            <select name="confidence" id="editEventConfidence" class="form-select form-select-sm">
+              <option>High</option><option>Medium</option><option>Low</option>
+            </select>
+          </div>
+
+          <div class="col-12">
+            <label class="form-label small fw-semibold">Color</label>
+            <div class="d-flex align-items-center gap-3 flex-wrap" id="editEventColorRow">
+              <label class="d-flex align-items-center gap-1 small">
+                <input type="radio" name="color_slot" value=""> None
+              </label>
+              {% for tc in timeline_colors %}
+              <label class="d-flex align-items-center gap-1 small" title="{{ tc.label }}">
+                <input type="radio" name="color_slot" value="{{ tc.slot }}">
+                <span style="display:inline-block;width:1rem;height:1rem;border-radius:50%;background:{{ tc.hex }};border:1px solid rgba(0,0,0,.15);"></span>
+                {{ tc.label }}
+              </label>
+              {% endfor %}
+            </div>
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Parent Event</label>
+            <select name="parent_id" id="editEventParent" class="form-select form-select-sm">
+              <option value="">— None (top level) —</option>
+              {% for pe in timeline_events %}
+              <option value="{{ pe.id }}">{{ pe.event_datetime.strftime('%Y-%m-%d %H:%M') }} UTC — {{ pe.description[:50] }}{{ '…' if pe.description|length > 50 }}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">Picking this event itself or one of its own descendants is rejected automatically on save.</div>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Source Artifact</label>
+            <input type="text" name="source_artifact" id="editEventSourceArtifact" class="form-control form-control-sm">
+          </div>
+
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Affected Assets</label>
+            {% if asset_options %}
+            <select name="affected_assets" id="editEventAssets" class="form-select form-select-sm" multiple size="4">
+              {% for a in asset_options %}<option value="{{ a }}">{{ a }}</option>{% endfor %}
+            </select>
+            <div class="form-text">Ctrl/Cmd-click for multiple.</div>
+            {% else %}
+            <div class="form-text">No affected systems listed on this case yet — add them via Edit Case first.</div>
+            {% endif %}
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Linked IOCs</label>
+            {% if iocs %}
+            <select name="ioc_ids" id="editEventIocs" class="form-select form-select-sm" multiple size="4">
+              {% for i in iocs %}<option value="{{ i.id }}">{{ i.ioc_type }}: {{ i.value[:50] }}</option>{% endfor %}
+            </select>
+            <div class="form-text">Ctrl/Cmd-click for multiple.</div>
+            {% else %}
+            <div class="form-text">No IOCs logged on this case yet.</div>
+            {% endif %}
+          </div>
+
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">MITRE Tactic</label>
+            <select name="mitre_tactic" id="editMitreSelectTactic" class="form-select form-select-sm" onchange="updateEditTechniques()">
+              <option value="">— None —</option>
+              {% for t in mitre_tactics %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="col-md-8">
+            <label class="form-label small fw-semibold">MITRE Technique</label>
+            <select name="mitre_technique_id" id="editMitreSelectTechniqueId" class="form-select form-select-sm" onchange="updateEditTechniqueId()">
+              <option value="">— Select tactic first —</option>
+            </select>
+            <input type="hidden" name="mitre_technique" id="editMitreHiddenTechnique">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-danger btn-sm">Save Changes</button>
       </div>
     </form>
   </div>
@@ -574,6 +860,113 @@ function openEditIoc(id, type, value, confidence, status, source, notes) {
   document.getElementById('editIocSource').value = source;
   document.getElementById('editIocNotes').value = notes;
   new bootstrap.Modal(document.getElementById('editIocModal')).show();
+}
+
+// Truncated timeline event descriptions — swap the short/full spans and
+// flip the link text, no server round-trip.
+function toggleDesc(link) {
+  const wrap = link.parentElement;
+  const short = wrap.querySelector('.tl2-desc-short');
+  const full = wrap.querySelector('.tl2-desc-full');
+  const expanded = !full.classList.contains('d-none');
+  if (expanded) {
+    full.classList.add('d-none');
+    short.classList.remove('d-none');
+    link.textContent = 'See more';
+  } else {
+    full.classList.remove('d-none');
+    short.classList.add('d-none');
+    link.textContent = 'See less';
+  }
+  return false;
+}
+
+// Edit Event modal — mirrors updateTechniques()/updateTechniqueId() above
+// but against the edit modal's own element ids, since both modals can be
+// in the DOM at once and ids must be unique per document.
+function updateEditTechniques(preselectId) {
+  const tactic = document.getElementById('editMitreSelectTactic').value;
+  const sel = document.getElementById('editMitreSelectTechniqueId');
+  sel.innerHTML = '<option value="">— Select technique —</option>';
+  if (tactic && MITRE[tactic]) {
+    MITRE[tactic].forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = t.id + ' — ' + t.name;
+      opt.dataset.name = t.name;
+      sel.appendChild(opt);
+    });
+  }
+  if (preselectId) {
+    sel.value = preselectId;
+  }
+  updateEditTechniqueId();
+}
+
+function updateEditTechniqueId() {
+  const sel = document.getElementById('editMitreSelectTechniqueId');
+  const opt = sel.options[sel.selectedIndex];
+  document.getElementById('editMitreHiddenTechnique').value = opt ? (opt.dataset.name || '') : '';
+}
+
+// Populates the Edit Event modal from the JSON blob rendered onto each
+// event's pencil button (see event_edit_data in cases.py) and shows it.
+// If a select doesn't have an <option> matching value, add one. Without
+// this, saving an edit for any unrelated reason (fixing a typo, say) after
+// the case's Affected Systems text changed or a category got deactivated
+// would submit that field as empty and quietly erase a previously-recorded
+// value the user never touched and had no way to notice was gone.
+function ensureOptionExists(selectEl, value, suffix) {
+  if (!selectEl || !value) return;
+  const exists = Array.from(selectEl.options).some(o => o.value === value);
+  if (!exists) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = value + (suffix || '');
+    selectEl.appendChild(opt);
+  }
+}
+
+function ensureOptionSelected(selectEl, value, suffix) {
+  ensureOptionExists(selectEl, value, suffix);
+  if (selectEl && value) selectEl.value = value;
+}
+
+function openEditEvent(data) {
+  document.getElementById('editEventForm').action = `/cases/{{ case.id }}/timeline/${data.id}/edit`;
+  document.getElementById('editEventDate').value = data.date;
+  document.getElementById('editEventTime').value = data.time;
+  document.getElementById('editEventTimezone').value = data.timezone || 'UTC';
+  document.getElementById('editEventDescription').value = data.description || '';
+  document.getElementById('editEventTag').value = data.tag || '';
+  document.getElementById('editEventConfidence').value = data.confidence || 'Medium';
+  document.getElementById('editEventSourceArtifact').value = data.source_artifact || '';
+  document.getElementById('editEventParent').value = data.parent_id || '';
+
+  ensureOptionSelected(document.getElementById('editEventCategory'), data.category, ' (inactive — removed in Settings)');
+
+  const colorValue = data.color_slot ? String(data.color_slot) : '';
+  document.querySelectorAll('#editEventColorRow input[name="color_slot"]').forEach(radio => {
+    radio.checked = (radio.value === colorValue);
+  });
+
+  const assetsSel = document.getElementById('editEventAssets');
+  if (assetsSel) {
+    const assets = data.affected_assets || [];
+    assets.forEach(a => ensureOptionExists(assetsSel, a, ' (no longer in Affected Systems)'));
+    Array.from(assetsSel.options).forEach(opt => { opt.selected = assets.includes(opt.value); });
+  }
+
+  const iocsSel = document.getElementById('editEventIocs');
+  if (iocsSel) {
+    const iocIds = (data.ioc_ids || []).map(String);
+    Array.from(iocsSel.options).forEach(opt => { opt.selected = iocIds.includes(opt.value); });
+  }
+
+  document.getElementById('editMitreSelectTactic').value = data.mitre_tactic || '';
+  updateEditTechniques(data.mitre_technique_id || '');
+
+  new bootstrap.Modal(document.getElementById('editEventModal')).show();
 }
 </script>
 {% endblock %}

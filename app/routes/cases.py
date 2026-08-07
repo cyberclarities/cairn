@@ -5,11 +5,12 @@ from flask import (
 from flask_login import login_required, current_user
 
 from app.common import (
-    choice, log_change as _log_change, log_event,
-    next_case_id, parse_datetime, parse_int,
+    ALL_TIMEZONES, build_timeline_display, choice, format_datetime_in_zone,
+    log_change as _log_change, log_event, next_case_id, parse_affected_systems,
+    parse_datetime, parse_int,
 )
 from app.decorators import analyst_required, admin_required
-from app.models import db, Case, User, CaseStatusHistory, LookupValue
+from app.models import db, Case, User, CaseStatusHistory, LookupValue, TIMELINE_COLORS
 from app.seed import MITRE_DATA
 
 cases_bp = Blueprint("cases", __name__, url_prefix="/cases")
@@ -107,12 +108,66 @@ def detail(case_id_int):
     ioc_types = [v.value for v in LookupValue.query.filter_by(list_name="ioc_type", is_active=True).order_by(LookupValue.display_order).all()]
     evidence_types = [v.value for v in LookupValue.query.filter_by(list_name="evidence_type", is_active=True).order_by(LookupValue.display_order).all()]
     mitre_tactics = list(MITRE_DATA.keys())
+
+    # Timeline: chronological at each level, children nested under their
+    # parent, alternating left/right per root with date-separator markers
+    # interleaved — see build_timeline_display for how it's assembled.
+    timeline_display = build_timeline_display(timeline_events)
+    timeline_categories = [
+        v.value for v in LookupValue.query
+        .filter_by(list_name="timeline_category", is_active=True)
+        .order_by(LookupValue.display_order).all()
+    ]
+    timeline_color_rows = (
+        LookupValue.query.filter_by(list_name="timeline_color")
+        .order_by(LookupValue.display_order).all()
+    )
+    timeline_colors = [
+        {"slot": lv.display_order, "label": lv.value, "hex": TIMELINE_COLORS[lv.display_order - 1]}
+        for lv in timeline_color_rows
+        if 1 <= lv.display_order <= len(TIMELINE_COLORS)
+    ]
+    asset_options = parse_affected_systems(case.affected_systems)
+
+    # Prefill data for the Edit Event modal, keyed by event id. Date/time are
+    # rendered back in the event's own source_timezone (not UTC) — see
+    # format_datetime_in_zone — so re-submitting an edit with nothing
+    # changed reconverts to the exact same UTC instant instead of drifting
+    # by the zone offset.
+    event_edit_data = {}
+    for ev in timeline_events:
+        date_str, time_str = format_datetime_in_zone(ev.event_datetime, ev.source_timezone)
+        event_edit_data[ev.id] = {
+            "id": ev.id,
+            "date": date_str,
+            "time": time_str,
+            "timezone": ev.source_timezone or "UTC",
+            "description": ev.description,
+            "category": ev.category or "",
+            "tag": ev.tag or "",
+            "color_slot": ev.color_slot or "",
+            "parent_id": ev.parent_id or "",
+            "source_artifact": ev.source_artifact or "",
+            "confidence": ev.confidence or "Medium",
+            "mitre_tactic": ev.mitre_tactic or "",
+            "mitre_technique_id": ev.mitre_technique_id or "",
+            "mitre_technique": ev.mitre_technique or "",
+            "affected_assets": ev.affected_assets_list,
+            "ioc_ids": [i.id for i in ev.iocs],
+        }
+
     return render_template(
         "cases/detail.html",
         case=case,
         iocs=iocs,
         evidence_items=evidence_items,
         timeline_events=timeline_events,
+        timeline_display=timeline_display,
+        event_edit_data=event_edit_data,
+        timeline_categories=timeline_categories,
+        timeline_colors=timeline_colors,
+        asset_options=asset_options,
+        timezones=ALL_TIMEZONES,
         audit_entries=audit_entries,
         status_history=status_history,
         ioc_types=ioc_types,

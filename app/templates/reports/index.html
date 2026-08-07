@@ -122,14 +122,12 @@
             <thead><tr><th>Case ID</th><th>Title</th><th>Severity</th><th>Days Open</th></tr></thead>
             <tbody>
             {% for c in stale_cases %}
-            {% set days = ((now()|default(c.opened_date)) - c.opened_date).days %}
+            {% set days = (report_generated_at - c.opened_date).days if c.opened_date else 0 %}
             <tr onclick="location.href='{{ url_for('cases.detail', case_id_int=c.id) }}'">
               <td class="small fw-semibold">{{ c.case_id }}</td>
               <td class="small">{{ c.title[:35] }}{% if c.title|length > 35 %}…{% endif %}</td>
               <td><span class="badge bg-{{ c.severity_color }}">{{ c.severity }}</span></td>
-              <td class="small text-danger fw-semibold">
-                {% if c.opened_date %}{{ ((c.opened_date|string)|replace('T',' ')|truncate(19,true,'')) }}{% endif %}
-              </td>
+              <td class="small text-danger fw-semibold">{{ days }} day{{ 's' if days != 1 }}</td>
             </tr>
             {% endfor %}
             </tbody>

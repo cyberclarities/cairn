@@ -15,8 +15,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # docker-compose supplies the environment at runtime via env_file.
 COPY . .
 
-# Writable location for the SQLite fallback and pre-restore safety snapshots.
-RUN mkdir -p /app/data/pre-restore
+# Writable location for pre-restore safety snapshots and uploaded evidence files.
+RUN mkdir -p /app/data/pre-restore /app/data/evidence
 
 # EXPOSE does not expand shell-style defaults, so it takes a literal.
 # The actual bind port comes from $PORT at runtime (see CMD).

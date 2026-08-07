@@ -128,8 +128,10 @@ flask db upgrade
 python run.py
 ```
 
-SQLite works for local development (`DATABASE_URL=sqlite:///dev.db`); PostgreSQL is required for
-backup/restore, since both use `pg_dump`/`psql`.
+PostgreSQL is required — there is no SQLite fallback. Backup/restore is built on `pg_dump`/`psql`,
+and foreign-key behaviors CAIRN depends on (e.g. deleting an alert clearing its timeline event's
+`alert_id` rather than orphaning it) rely on Postgres enforcing foreign keys, which SQLite does not
+do by default. Point `DATABASE_URL` at a real Postgres instance for local development too.
 
 ## Security
 

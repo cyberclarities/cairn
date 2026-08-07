@@ -15,9 +15,9 @@ from flask import (
 )
 from flask_login import current_user, login_required
 
-from ..common import choice, optional_choice, next_case_id
+from ..common import choice, optional_choice, next_case_id, parse_affected_systems
 from ..decorators import analyst_required, admin_required
-from ..models import Alert, Case, AuditLog, TimelineEvent, db, utcnow
+from ..models import Alert, Case, AuditLog, IOC, TimelineEvent, db, utcnow
 
 alerts_bp = Blueprint("alerts", __name__, url_prefix="/alerts")
 
@@ -28,14 +28,118 @@ SOURCES = ["crowdstrike", "proofpoint"]
 # Helper
 # ---------------------------------------------------------------------------
 
-def _alert_to_timeline_event(alert, case_id, user_id):
+def _alert_asset_and_iocs(alert):
     """
-    Convert a promoted/linked Alert into a TimelineEvent on the target case.
+    Map an alert's fields to (affected asset value, [(ioc_type, value), ...]).
+
+    CrowdStrike and Proofpoint alerts reuse the same Alert columns for
+    different things, and treating them the same way here is exactly how a
+    sender's email address ends up filed as a hostname. See
+    app/services/proofpoint.py's _normalise_message / _normalise_click:
+    host_hostname on a Proofpoint alert is the sender's address, host_ip is
+    the sender's IP, and username is the recipient — the side that's
+    actually ours, which is why it's the affected asset for that source
+    instead of host_hostname.
+    """
+    candidates = []  # (ioc_type, value)
+
+    if alert.source == "proofpoint":
+        asset = (alert.username or "").strip() or None
+        if alert.host_ip:
+            candidates.append(("IP Address", alert.host_ip))
+        if alert.host_hostname:
+            candidates.append(("Email Address", alert.host_hostname))
+        if alert.username:
+            candidates.append(("Email Address", alert.username))
+        # objective distinguishes message events (description = subject line)
+        # from click events (description = the URL that was clicked) — only
+        # the latter is a URL indicator.
+        is_click = alert.objective in ("clicksBlocked", "clicksPermitted")
+        if is_click and alert.description:
+            candidates.append(("URL", alert.description))
+    else:
+        asset = (alert.host_hostname or "").strip() or None
+        if alert.host_ip:
+            candidates.append(("IP Address", alert.host_ip))
+        if alert.host_hostname:
+            # No dedicated Hostname IOC type in the seeded list — Other is
+            # the closest fit without inventing a new type for one feature.
+            candidates.append(("Other", alert.host_hostname))
+        if alert.username:
+            candidates.append(("User Account", alert.username))
+
+    seen = set()
+    deduped = []
+    for ioc_type, value in candidates:
+        value = value.strip()
+        key = (ioc_type, value.lower())
+        if not value or key in seen:
+            continue
+        seen.add(key)
+        deduped.append((ioc_type, value))
+
+    return asset, deduped
+
+
+def _ensure_affected_asset(case, asset_value):
+    """
+    Add asset_value to case.affected_systems if it isn't already listed
+    (case-insensitive) — so re-promoting a second alert for a host already
+    on the case doesn't pile up near-duplicate lines that only differ in
+    case.
+    """
+    if not asset_value:
+        return
+    existing = parse_affected_systems(case.affected_systems)
+    if any(v.lower() == asset_value.lower() for v in existing):
+        return
+    prefix = (case.affected_systems + "\n") if (case.affected_systems or "").strip() else ""
+    case.affected_systems = prefix + asset_value
+
+
+def _find_or_create_ioc(case_id, ioc_type, value, source_label, user_id):
+    """
+    Link an alert-derived indicator to the case, reusing an existing IOC of
+    the same type and value (case-insensitive) rather than stacking a new
+    row every time the same host or address shows up in another alert.
+    """
+    existing = IOC.query.filter(
+        IOC.case_id == case_id,
+        IOC.ioc_type == ioc_type,
+        db.func.lower(IOC.value) == value.lower(),
+    ).first()
+    if existing:
+        return existing
+
+    ioc = IOC(
+        case_id=case_id,
+        ioc_type=ioc_type,
+        value=value,
+        source=f"{source_label} alert",
+        confidence="Medium",
+        status="Active",
+        created_by_id=user_id,
+    )
+    db.session.add(ioc)
+    db.session.flush()
+    return ioc
+
+
+def _alert_to_timeline_event(alert, case, user_id):
+    """
+    Convert a promoted/linked Alert into a fully-populated TimelineEvent on
+    the target case.
 
     Uses the alert's detection timestamp as the event time, maps severity to
-    confidence, and populates MITRE fields where available.
+    confidence, and populates MITRE fields where available — same as before.
+    New: the affected host/recipient is added to both the case and the
+    event, and every indicator the alert carries is auto-created on the case
+    (deduped) and linked to the event. Category/tag/color are fixed rather
+    than derived — every alert-promoted event is a Detection, tagged with
+    its source, and colored Red (slot 1): Green and Blue are reserved for
+    analyst-entered "action taken" and "remediation" events, which this
+    feature doesn't create.
     """
-    # Build a human-readable description
     if alert.source == "proofpoint":
         lines = [f"[Proofpoint] {alert.severity_name} email threat detected"]
         if alert.description:
@@ -55,7 +159,6 @@ def _alert_to_timeline_event(alert, case_id, user_id):
 
     description = "\n".join(lines)
 
-    # Map alert severity to timeline confidence
     confidence = {
         "Critical": "High",
         "High": "High",
@@ -63,8 +166,20 @@ def _alert_to_timeline_event(alert, case_id, user_id):
         "Low": "Low",
     }.get(alert.severity_name, "Medium")
 
-    return TimelineEvent(
-        case_id=case_id,
+    asset, ioc_candidates = _alert_asset_and_iocs(alert)
+
+    affected_assets = None
+    if asset:
+        _ensure_affected_asset(case, asset)
+        affected_assets = asset
+
+    linked_iocs = [
+        _find_or_create_ioc(case.id, ioc_type, value, alert.source_label, user_id)
+        for ioc_type, value in ioc_candidates
+    ]
+
+    ev = TimelineEvent(
+        case_id=case.id,
         event_datetime=alert.cs_created_at or alert.fetched_at or utcnow(),
         event_type=None,
         description=description,
@@ -74,8 +189,15 @@ def _alert_to_timeline_event(alert, case_id, user_id):
         mitre_technique_id=alert.technique_id,
         ioc_reference=None,
         confidence=confidence,
+        category="Detection",
+        tag=alert.source,
+        color_slot=1,
+        affected_assets=affected_assets,
+        alert_id=alert.id,
         created_by_id=user_id,
     )
+    ev.iocs = linked_iocs
+    return ev
 
 
 def _log_audit(entity_type, entity_id, field, old, new, case_id=None):
@@ -289,7 +411,7 @@ def promote():
         a.reviewed_by_id = current_user.id
         a.reviewed_at = now
         _log_audit("alert", a.id, "status", old_status, "promoted", case_id=case.id)
-        db.session.add(_alert_to_timeline_event(a, case.id, current_user.id))
+        db.session.add(_alert_to_timeline_event(a, case, current_user.id))
 
     _log_audit("case", case.id, "created_from_alerts",
                None, ",".join(str(i) for i in alert_ids), case_id=case.id)
@@ -340,7 +462,7 @@ def link_to_case():
         a.reviewed_by_id = current_user.id
         a.reviewed_at = now
         _log_audit("alert", a.id, "status", old_status, "promoted", case_id=case.id)
-        db.session.add(_alert_to_timeline_event(a, case.id, current_user.id))
+        db.session.add(_alert_to_timeline_event(a, case, current_user.id))
         linked += 1
 
     db.session.commit()

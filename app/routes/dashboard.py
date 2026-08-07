@@ -80,11 +80,15 @@ def index():
     for src, cnt in rows:
         alert_source_counts[src] = cnt
 
-    # Recent unreviewed alerts across all sources (newest first)
+    # Recent unreviewed alerts across all sources (newest first).
+    # cs_created_at is nullable; ordering by it directly put null-timestamp
+    # rows ahead of genuinely recent ones under Postgres's default NULLS
+    # FIRST-on-DESC behavior. COALESCE to fetched_at (never null) so "recent"
+    # actually means recent regardless of which timestamp a row has.
     recent_alerts = (
         Alert.query
         .filter(Alert.status.in_(["new", "reviewing"]))
-        .order_by(Alert.cs_created_at.desc(), Alert.fetched_at.desc())
+        .order_by(func.coalesce(Alert.cs_created_at, Alert.fetched_at).desc())
         .limit(10)
         .all()
     )

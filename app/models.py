@@ -208,6 +208,20 @@ class Evidence(db.Model):
     hash_sha256 = db.Column(db.String(64))
     size_bytes = db.Column(db.BigInteger, nullable=True)
 
+    # Set only when a file was uploaded through the app (as opposed to an
+    # evidence record describing something collected and stored elsewhere).
+    # file_path is relative to EVIDENCE_STORAGE_PATH and server-generated —
+    # see app/services/evidence_storage.py — never taken from request input.
+    file_path = db.Column(db.String(512), nullable=True)
+    original_filename = db.Column(db.String(256), nullable=True)
+    mime_type = db.Column(db.String(128), nullable=True)
+
+    # Set on every download: the file is re-hashed against hash_sha256 so a
+    # change to the bytes on disk is caught at the point someone relies on
+    # them, not just noted once at upload and trusted forever after.
+    hash_verified_at = db.Column(db.DateTime, nullable=True)
+    hash_verified_ok = db.Column(db.Boolean, nullable=True)
+
     collected_by = db.Column(db.String(128))
     collection_date = db.Column(db.Date, nullable=True)
     storage_location = db.Column(db.String(512))
@@ -221,6 +235,10 @@ class Evidence(db.Model):
     created_at = db.Column(db.DateTime, default=utcnow)
     created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     created_by = db.relationship("User")
+
+    @property
+    def has_file(self):
+        return bool(self.file_path)
 
     @property
     def status_color(self):
@@ -239,6 +257,31 @@ class Evidence(db.Model):
 # Timeline Event
 # ---------------------------------------------------------------------------
 
+# Fixed 7-slot palette. The hex values themselves are not admin-editable —
+# only the label attached to each slot is (see LookupValue list_name
+# "timeline_color", keyed by display_order 1-7 in settings.py). Position in
+# this list *is* the slot number; do not reorder it, only append is safe if
+# the palette ever needs to grow.
+TIMELINE_COLORS = [
+    "#dc3545",  # 1 red
+    "#fd7e14",  # 2 orange
+    "#ffc107",  # 3 amber
+    "#198754",  # 4 green
+    "#20c997",  # 5 teal
+    "#0d6efd",  # 6 blue
+    "#6f42c1",  # 7 purple
+]
+
+# Many-to-many: a timeline event can reference several IOCs from the same
+# case, and an IOC can show up on several events. A plain association table
+# (no extra columns) is all either side needs.
+timeline_event_iocs = db.Table(
+    "timeline_event_iocs",
+    db.Column("timeline_event_id", db.Integer, db.ForeignKey("timeline_events.id"), primary_key=True),
+    db.Column("ioc_id", db.Integer, db.ForeignKey("iocs.id"), primary_key=True),
+)
+
+
 class TimelineEvent(db.Model):
     __tablename__ = "timeline_events"
 
@@ -246,6 +289,12 @@ class TimelineEvent(db.Model):
     case_id = db.Column(db.Integer, db.ForeignKey("cases.id"), nullable=False, index=True)
 
     event_datetime = db.Column(db.DateTime, nullable=False)
+
+    # The timezone the analyst actually entered the time in, before it was
+    # converted to UTC for storage. Purely a record of intent — event_datetime
+    # is always UTC and is what every query/sort/display uses. Kept around so
+    # "what did the analyst actually type" is answerable later.
+    source_timezone = db.Column(db.String(64), default="UTC")
 
     event_type = db.Column(db.String(64), nullable=True)
     # Maps to MITRE ATT&CK tactic names (optional; mitre_tactic is the primary field)
@@ -258,7 +307,47 @@ class TimelineEvent(db.Model):
     mitre_technique_id = db.Column(db.String(16))
 
     ioc_reference = db.Column(db.Text)
+    # Legacy free-text IOC notes, kept for records written before the
+    # structured link below existed. New events use `iocs`.
+    iocs = db.relationship("IOC", secondary=timeline_event_iocs,
+                            backref=db.backref("timeline_events", lazy="dynamic"))
+
     confidence = db.Column(db.String(8), default="Medium")  # High / Medium / Low
+
+    # Admin-defined dropdown — see LookupValue list_name "timeline_category".
+    category = db.Column(db.String(64), nullable=True)
+
+    # Single free-text sorting tag.
+    tag = db.Column(db.String(64), nullable=True)
+
+    # Index into TIMELINE_COLORS (1-7), or None for no color.
+    color_slot = db.Column(db.Integer, nullable=True)
+
+    # Newline-separated subset of the case's affected_systems text. Stored as
+    # a plain snapshot rather than a foreign key — Cairn has no structured
+    # Asset entity, so this records which of the strings the case listed at
+    # the time were relevant to this event, not a live reference to them.
+    affected_assets = db.Column(db.Text, nullable=True)
+
+    # Self-referential parent. ON DELETE SET NULL means deleting a parent row
+    # never leaves a dangling reference at the database level regardless of
+    # the order the ORM issues statements in (relevant for case cascade
+    # delete, which removes every timeline event in one go) — the app-level
+    # delete_event route re-parents children explicitly for a single delete,
+    # this is the backstop for bulk deletes.
+    parent_id = db.Column(db.Integer, db.ForeignKey("timeline_events.id", ondelete="SET NULL"),
+                           nullable=True, index=True)
+    parent = db.relationship("TimelineEvent", remote_side=[id],
+                              backref=db.backref("children", lazy="dynamic"))
+
+    # Source alert, when this event was auto-created by promoting or linking
+    # an Alert to a case. Alerts are purgeable independent of case history
+    # (see settings.purge_alerts — a bulk DELETE) so this is nullable with
+    # ON DELETE SET NULL: purging the alert row must never take the timeline
+    # record of what happened along with it.
+    alert_id = db.Column(db.Integer, db.ForeignKey("alerts.id", ondelete="SET NULL"),
+                          nullable=True, index=True)
+    alert = db.relationship("Alert", backref=db.backref("timeline_events", lazy="dynamic"))
 
     created_at = db.Column(db.DateTime, default=utcnow)
     created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
@@ -267,6 +356,18 @@ class TimelineEvent(db.Model):
     @property
     def confidence_color(self):
         return {"High": "danger", "Medium": "warning", "Low": "secondary"}.get(self.confidence, "secondary")
+
+    @property
+    def color_hex(self):
+        if self.color_slot and 1 <= self.color_slot <= len(TIMELINE_COLORS):
+            return TIMELINE_COLORS[self.color_slot - 1]
+        return None
+
+    @property
+    def affected_assets_list(self):
+        if not self.affected_assets:
+            return []
+        return [line for line in self.affected_assets.splitlines() if line.strip()]
 
     def __repr__(self):
         return f"<TimelineEvent {self.event_datetime} {self.mitre_technique_id}>"

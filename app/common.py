@@ -89,6 +89,193 @@ def parse_date(value, fmt="%Y-%m-%d"):
 
 
 # ---------------------------------------------------------------------------
+# Timezones — timeline events are entered in whatever zone the analyst was
+# looking at (their own clock, a log source's local time, a client's site),
+# converted to UTC on write. event_datetime is always UTC; source_timezone
+# just records what was actually typed.
+# ---------------------------------------------------------------------------
+
+def _load_timezones():
+    """
+    All IANA zone names, UTC pinned first. Computed once at import time —
+    zoneinfo.available_timezones() does a filesystem/zip scan, not something
+    to repeat on every page render.
+    """
+    from zoneinfo import available_timezones
+    names = sorted(z for z in available_timezones() if z != "UTC" and not z.startswith("Etc/"))
+    return ["UTC"] + names
+
+
+ALL_TIMEZONES = _load_timezones()
+
+
+def parse_event_datetime_tz(date_str, time_str, tz_name):
+    """
+    Combine a date, a time, and an IANA zone name into a UTC datetime.
+
+    Returns (utc_datetime, normalized_tz_name) — the second value is what was
+    actually applied, which is "UTC" whenever tz_name was missing or not a
+    real zone, so the record never claims to have used a timezone that
+    doesn't exist. Returns (None, normalized_tz_name) if date/time didn't
+    parse at all.
+    """
+    from datetime import datetime, timezone as dt_timezone
+    from zoneinfo import ZoneInfo
+
+    tz_name = (tz_name or "UTC").strip() or "UTC"
+    try:
+        zone = ZoneInfo(tz_name)
+    except Exception:
+        tz_name = "UTC"
+        zone = ZoneInfo("UTC")
+
+    if not date_str or not time_str:
+        return None, tz_name
+
+    try:
+        naive = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return None, tz_name
+
+    aware = naive.replace(tzinfo=zone)
+    utc_dt = aware.astimezone(dt_timezone.utc).replace(tzinfo=None)
+    return utc_dt, tz_name
+
+
+# ---------------------------------------------------------------------------
+# Timeline events — asset parsing and parent/child tree flattening
+# ---------------------------------------------------------------------------
+
+def parse_affected_systems(text):
+    """
+    Case.affected_systems is a freeform textarea, one system per line by
+    convention elsewhere in the app. Split it into discrete options for the
+    "affected assets" picker on a timeline event — blank lines dropped,
+    order preserved, duplicates collapsed.
+    """
+    if not text:
+        return []
+    seen = set()
+    result = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line and line not in seen:
+            seen.add(line)
+            result.append(line)
+    return result
+
+
+def format_datetime_in_zone(dt_utc, tz_name):
+    """
+    Render a stored UTC datetime as (date_str, time_str) in *tz_name*, for
+    pre-filling the edit form.
+
+    This has to be the exact inverse of parse_event_datetime_tz: the edit
+    modal shows the event's own source_timezone selected and the date/time
+    fields converted into that zone, not raw UTC. Saving with no changes
+    then re-parses those same displayed values through the same zone and
+    lands back on the identical UTC instant. Pre-filling with UTC values but
+    a different zone pre-selected would silently shift the stored time by
+    the zone offset on every no-op edit.
+    """
+    from datetime import timezone as dt_timezone
+    from zoneinfo import ZoneInfo
+
+    try:
+        zone = ZoneInfo(tz_name or "UTC")
+    except Exception:
+        zone = ZoneInfo("UTC")
+
+    aware_utc = dt_utc.replace(tzinfo=dt_timezone.utc)
+    local = aware_utc.astimezone(zone)
+    return local.strftime("%Y-%m-%d"), local.strftime("%H:%M")
+
+
+def assign_timeline_sides(tree):
+    """
+    Alternate left/right across root-level events only; every descendant
+    inherits its parent's side. *tree* is the (event, depth) output of
+    build_event_tree, which visits a parent immediately before its children,
+    so each child's side is always already known by the time it's reached.
+
+    Returns a list of (event, depth, side) tuples.
+    """
+    side_by_id = {}
+    result = []
+    root_count = 0
+    for ev, depth in tree:
+        if depth == 0:
+            side = "left" if root_count % 2 == 0 else "right"
+            root_count += 1
+        else:
+            side = side_by_id.get(ev.parent_id, "left")
+        side_by_id[ev.id] = side
+        result.append((ev, depth, side))
+    return result
+
+
+def build_timeline_display(events):
+    """
+    The full render-ready structure for the case timeline: date-separator
+    markers interleaved with (event, depth, side) markers, in display order.
+
+    A date marker is inserted whenever the calendar date changes from the
+    previous entry *in this already-nested order* — not a strictly global
+    chronological pass, since a child nested several events "late" still
+    renders directly under its parent rather than off in date order. Within
+    any single parent's children, order is still chronological (inherited
+    from build_event_tree), so times read correctly top-to-bottom at every
+    level even when the date pills above them don't move strictly forward.
+    """
+    tree = build_event_tree(events)
+    with_sides = assign_timeline_sides(tree)
+
+    display = []
+    last_date = None
+    for ev, depth, side in with_sides:
+        d = ev.event_datetime.date()
+        if d != last_date:
+            display.append({"type": "pill", "date": d})
+            last_date = d
+        display.append({"type": "event", "ev": ev, "depth": depth, "side": side})
+    return display
+
+
+def build_event_tree(events):
+    """
+    Flatten a case's timeline events into (event, depth) tuples for display:
+    root events (no parent) in chronological order, each one's children
+    nested directly beneath it and also chronological among themselves, and
+    so on recursively.
+
+    *events* must already be ordered by event_datetime ascending — grouping
+    by parent_id below is a stable partition, so that order is preserved
+    within each level for free.
+    """
+    from collections import defaultdict
+
+    by_parent = defaultdict(list)
+    for ev in events:
+        by_parent[ev.parent_id].append(ev)
+
+    result = []
+
+    def walk(parent_id, depth, ancestors):
+        for ev in by_parent.get(parent_id, []):
+            if ev.id in ancestors:
+                # A parent_id pointing back into its own ancestry shouldn't be
+                # reachable through the app (edit_event blocks it), but a
+                # cycle here would otherwise recurse forever — skip rather
+                # than hang if the data is ever wrong.
+                continue
+            result.append((ev, depth))
+            walk(ev.id, depth + 1, ancestors | {ev.id})
+
+    walk(None, 0, frozenset())
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Audit logging
 # ---------------------------------------------------------------------------
 

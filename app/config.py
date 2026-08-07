@@ -25,11 +25,31 @@ def _require_secret_key() -> str:
     return key
 
 
+def _require_database_url() -> str:
+    """
+    Return DATABASE_URL, refusing to start without one.
+
+    There used to be a SQLite fallback here (sqlite:////app/data/cairn.db).
+    CAIRN's backup/restore is built on pg_dump/psql and several FK behaviors
+    (ON DELETE SET NULL on timeline_events.parent_id / alert_id) depend on
+    Postgres actually enforcing foreign keys, which SQLite does not do out of
+    the box — a silent SQLite default meant those could look like they worked
+    in a quick local run and not actually be exercised at all. Failing loudly
+    at boot beats a database that quietly isn't the one this app is built for.
+    """
+    url = os.environ.get("DATABASE_URL", "")
+    if not url.strip():
+        raise RuntimeError(
+            "DATABASE_URL is not set. CAIRN requires PostgreSQL — set DATABASE_URL "
+            "to a postgresql:// connection string, e.g.:\n"
+            "  DATABASE_URL=postgresql://user:pass@host:5432/cairn"
+        )
+    return url
+
+
 class Config:
     SECRET_KEY = _require_secret_key()
-    SQLALCHEMY_DATABASE_URI = os.environ.get(
-        "DATABASE_URL", "sqlite:////app/data/cairn.db"
-    )
+    SQLALCHEMY_DATABASE_URI = _require_database_url()
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # ── Session cookie hardening ─────────────────────────────────────────────
@@ -45,7 +65,7 @@ class Config:
 
     # Reject oversized uploads outright (restore accepts .sql/.sql.gz dumps).
     MAX_CONTENT_LENGTH = int(os.environ.get("MAX_UPLOAD_MB", 512)) * 1024 * 1024
-    # Connection pool settings — effective for PostgreSQL; ignored for SQLite
+    # Connection pool settings (PostgreSQL)
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_pre_ping": True,    # Verify connections before use (handles idle timeouts)
         "pool_recycle": 300,       # Recycle connections after 5 minutes
@@ -58,6 +78,11 @@ class Config:
     CASE_ID_PREFIX = os.environ.get("CASE_ID_PREFIX", "INC")
     EVIDENCE_ID_PREFIX = os.environ.get("EVIDENCE_ID_PREFIX", "EVD")
     BASE_URL = os.environ.get("BASE_URL", "https://localhost")
+
+    # Local disk root for uploaded evidence files. Mount a persistent volume
+    # here — falls back to the container's temp dir (and logs a warning) if
+    # this path isn't writable, but that fallback does not survive a restart.
+    EVIDENCE_STORAGE_PATH = os.environ.get("EVIDENCE_STORAGE_PATH", "/app/data/evidence")
 
     # Bootstrap admin (used once on first start)
     ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
@@ -89,6 +114,12 @@ class Config:
     CS_BASE_URL = os.environ.get("CS_BASE_URL", "https://api.crowdstrike.com")
     # How many alerts to pull per poll cycle (max 500)
     CS_POLL_LIMIT = int(os.environ.get("CS_POLL_LIMIT", 200))
+    # Seconds of history to pull on the very first poll, before a high-water
+    # mark exists (900 = 15 min, matches scheduler interval). After the first
+    # successful poll the scheduler queries forward from the stored mark
+    # instead — same role as PP_POLL_WINDOW below, kept separate so setting
+    # one source's initial lookback doesn't silently change the other's.
+    CS_POLL_WINDOW = int(os.environ.get("CS_POLL_WINDOW", 900))
 
     # Proofpoint TAP SIEM API (optional — leave PP_SERVICE_PRINCIPAL blank to disable polling)
     PP_SERVICE_PRINCIPAL = os.environ.get("PP_SERVICE_PRINCIPAL", "")

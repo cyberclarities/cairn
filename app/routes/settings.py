@@ -22,13 +22,13 @@ from urllib.parse import urlparse
 
 from flask import (
     Blueprint, render_template, redirect, url_for,
-    flash, request, send_file, current_app, g,
+    flash, request, send_file, current_app, g, abort,
 )
 from flask_login import login_required, current_user
 
 from ..common import log_event, parse_int
 from ..decorators import admin_required
-from ..models import db, LookupValue, AuditLog, Case, Alert, utcnow
+from ..models import db, LookupValue, AuditLog, Case, Alert, utcnow, TIMELINE_COLORS
 
 log = logging.getLogger(__name__)
 
@@ -183,7 +183,7 @@ def _alert_purge_query(status: str, source: str, days: int):
 @admin_required
 def index():
     lists = {}
-    for list_name in ("case_type", "ioc_type", "evidence_type"):
+    for list_name in ("case_type", "ioc_type", "evidence_type", "timeline_category"):
         lists[list_name] = (
             LookupValue.query
             .filter_by(list_name=list_name, is_active=True)
@@ -191,6 +191,21 @@ def index():
             .all()
         )
     cases = Case.query.order_by(Case.case_id).all()
+
+    # Fixed 7 slots — always all 7, active or not, in slot order. Zipped with
+    # the hex each slot renders as (not itself admin-editable) so the
+    # template can show a real swatch next to each label's rename form.
+    timeline_color_rows = (
+        LookupValue.query
+        .filter_by(list_name="timeline_color")
+        .order_by(LookupValue.display_order)
+        .all()
+    )
+    timeline_colors = [
+        {"lookup": lv, "hex": TIMELINE_COLORS[lv.display_order - 1]}
+        for lv in timeline_color_rows
+        if 1 <= lv.display_order <= len(TIMELINE_COLORS)
+    ]
 
     # Alert-purge preview: only computed when a Preview GET carries purge_days,
     # so a bare visit to /admin/settings doesn't run an extra count() query.
@@ -206,7 +221,8 @@ def index():
             "count": _alert_purge_query(p_status, p_source, p_days).count(),
         }
 
-    return render_template("admin/settings.html", lists=lists, cases=cases, purge_preview=purge_preview)
+    return render_template("admin/settings.html", lists=lists, cases=cases,
+                           purge_preview=purge_preview, timeline_colors=timeline_colors)
 
 
 @settings_bp.route("/lookup/add", methods=["POST"])
@@ -218,6 +234,14 @@ def add_lookup():
     if not list_name or not value:
         flash("List name and value are required.", "danger")
         return redirect(url_for("settings.index"))
+
+    # timeline_color is a fixed 7-slot palette keyed by display_order (see
+    # TIMELINE_COLORS in models.py) — an 8th row here wouldn't correspond to
+    # any real color and would just sit inert. rename_timeline_color is the
+    # only supported way to change what a slot means.
+    if list_name == "timeline_color":
+        flash("Timeline colors are a fixed palette — rename a slot instead of adding one.", "danger")
+        return redirect(url_for("settings.index") + "#timeline_color")
 
     existing = LookupValue.query.filter_by(list_name=list_name, value=value).first()
     if existing:
@@ -252,6 +276,15 @@ def remove_lookup(lv_id):
 @admin_required
 def move_lookup(lv_id, direction):
     lv = db.get_or_404(LookupValue, lv_id)
+
+    # display_order IS the color slot number — it's how TIMELINE_COLORS maps
+    # a row to a hex value (see models.py). Swapping two timeline_color rows'
+    # display_order would swap which color every event carrying that slot
+    # number renders as, silently recoloring events that were never touched.
+    if lv.list_name == "timeline_color":
+        flash("Timeline color slots are fixed and can't be reordered.", "danger")
+        return redirect(url_for("settings.index") + "#timeline_color")
+
     siblings = (
         LookupValue.query
         .filter_by(list_name=lv.list_name, is_active=True)
@@ -269,6 +302,33 @@ def move_lookup(lv_id, direction):
 
     db.session.commit()
     return redirect(url_for("settings.index") + f"#{lv.list_name}")
+
+
+@settings_bp.route("/timeline-color/<int:lv_id>/rename", methods=["POST"])
+@login_required
+@admin_required
+def rename_timeline_color(lv_id):
+    """
+    Relabel one of the 7 fixed color slots.
+
+    Deliberately separate from add_lookup/remove_lookup: the palette is a
+    fixed set of 7 hex values keyed by display_order (see TIMELINE_COLORS in
+    models.py), not an open list — there is no "add an 8th color" or "remove
+    a slot" here, only renaming what a slot means to this team.
+    """
+    lv = db.get_or_404(LookupValue, lv_id)
+    if lv.list_name != "timeline_color":
+        abort(404)
+
+    label = request.form.get("value", "").strip()[:64]
+    if not label:
+        flash("Color label cannot be empty.", "danger")
+        return redirect(url_for("settings.index") + "#timeline_color")
+
+    lv.value = label
+    db.session.commit()
+    flash("Color label updated.", "success")
+    return redirect(url_for("settings.index") + "#timeline_color")
 
 
 # ---------------------------------------------------------------------------

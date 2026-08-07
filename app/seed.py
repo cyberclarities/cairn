@@ -291,6 +291,61 @@ DEFAULT_LOOKUP_VALUES = {
 }
 
 
+DEFAULT_TIMELINE_CATEGORIES = [
+    "Detection",
+    "Investigation",
+    "Containment",
+    "Eradication",
+    "Recovery",
+    "Communication",
+    "Attacker Action",
+    "Other",
+]
+
+# Labels only — the hex value each slot renders as lives in TIMELINE_COLORS
+# (app/models.py) and is not admin-editable, only the label is. Position
+# here is the slot number (1-7); order matters.
+DEFAULT_TIMELINE_COLOR_LABELS = [
+    "Red",
+    "Orange",
+    "Amber",
+    "Green",
+    "Teal",
+    "Blue",
+    "Purple",
+]
+
+
+def _backfill_timeline_lookups(app):
+    """
+    Ensure timeline_category has its starter values and timeline_color has
+    all 7 slots, without touching anything an admin already edited.
+
+    Runs on every startup, not just when lookup_values is empty — case_type,
+    ioc_type, and evidence_type were seeded once when this database was
+    first created, but timeline_category and timeline_color are new lists
+    added after that. On an existing install, LookupValue.query.count() == 0
+    is already false by the time this runs, so the fresh-install seeding
+    block above never touches them. This checks each new list on its own
+    and only adds what's missing.
+    """
+    from app.models import db, LookupValue
+
+    if LookupValue.query.filter_by(list_name="timeline_category").count() == 0:
+        for i, value in enumerate(DEFAULT_TIMELINE_CATEGORIES):
+            db.session.add(LookupValue(list_name="timeline_category", value=value, display_order=i))
+
+    existing_slots = {
+        lv.display_order
+        for lv in LookupValue.query.filter_by(list_name="timeline_color").all()
+    }
+    for slot, label in enumerate(DEFAULT_TIMELINE_COLOR_LABELS, start=1):
+        if slot not in existing_slots:
+            db.session.add(LookupValue(list_name="timeline_color", value=label, display_order=slot))
+
+    db.session.commit()
+
+
 def _backfill_id_counters(app):
     """
     Initialise the ID counters from records that already exist.
@@ -353,6 +408,7 @@ def seed_database(app):
             return
 
         _backfill_id_counters(app)
+        _backfill_timeline_lookups(app)
 
         # Only seed if lookup_values table is empty
         if LookupValue.query.count() == 0:

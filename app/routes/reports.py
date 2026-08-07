@@ -95,6 +95,11 @@ def index():
         tactic_rows=tactic_rows,
         ioc_type_rows=ioc_type_rows,
         stale_cases=stale_cases,
+        # "days open" is computed here, not in the template — Jinja has no
+        # `now()` global registered, so the old template-side calculation
+        # (`now()|default(...)`) raised UndefinedError on render and took
+        # this whole page down the moment any case crossed the 30-day mark.
+        report_generated_at=utcnow(),
         mttr=mttr,
         # Surfaced so the figure can be read honestly: a mean over 3 of 40 closed
         # cases is not the same claim as a mean over all 40.

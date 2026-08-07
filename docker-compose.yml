@@ -56,6 +56,12 @@ services:
     environment:
       - PORT=${PORT:-5002}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-cairn}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB:-cairn}
+    volumes:
+      # Uploaded evidence files and pre-restore snapshots. Without this
+      # mount both live only in the container's writable layer and are gone
+      # on the next `docker compose up --build` — fine for the database,
+      # which lives in postgres_data, but not for evidence on disk.
+      - cairn_data:/app/data
     networks:
       - cairn_net
     depends_on:
@@ -73,3 +79,5 @@ volumes:
     name: cairn_caddy_config
   postgres_data:
     name: cairn_postgres_data
+  cairn_data:
+    name: cairn_data
