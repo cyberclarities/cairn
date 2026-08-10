@@ -12,6 +12,7 @@ from app.common import (
 from app.decorators import analyst_required, admin_required
 from app.models import db, Case, User, CaseStatusHistory, LookupValue, TIMELINE_COLORS
 from app.seed import MITRE_DATA
+from app.services import report_builder
 
 cases_bp = Blueprint("cases", __name__, url_prefix="/cases")
 
@@ -129,6 +130,14 @@ def detail(case_id_int):
     ]
     asset_options = parse_affected_systems(case.affected_systems)
 
+    # Report tab: IMP severity classification is computed, never stored —
+    # it's derived fresh from the two impact axes every time so it can never
+    # go stale relative to them. See app/services/report_builder.py.
+    imp_severity = report_builder.imp_severity(case.imp_functional_impact, case.imp_informational_impact)
+    approval_authority = report_builder.approval_authority(imp_severity)
+    deviations = case.deviations.order_by(db.text("created_at desc")).all()
+    recommendations = case.recommendations.order_by(db.text("id asc")).all()
+
     # Prefill data for the Edit Event modal, keyed by event id. Date/time are
     # rendered back in the event's own source_timezone (not UTC) — see
     # format_datetime_in_zone — so re-submitting an edit with nothing
@@ -174,6 +183,10 @@ def detail(case_id_int):
         evidence_types=evidence_types,
         mitre_tactics=mitre_tactics,
         mitre_data_json=_mitre_json(),
+        imp_severity=imp_severity,
+        approval_authority=approval_authority,
+        deviations=deviations,
+        recommendations=recommendations,
     )
 
 

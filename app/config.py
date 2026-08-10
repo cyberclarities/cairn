@@ -147,3 +147,14 @@ class Config:
     IOC_CONFIDENCES = ["High", "Medium", "Low"]
     IOC_STATUSES = ["Active", "Resolved", "False Positive"]
     EVIDENCE_STATUSES = ["Collected", "In Analysis", "Analyzed", "Archived"]
+
+    # ── Incident Report / AAR vocab ──────────────────────────────────────────
+    # Fixed by the Incident Management Plan, not admin-editable (unlike
+    # case_type/ioc_type/evidence_type, which are LookupValue rows) — these
+    # are compliance terms, not house style.
+    RECOVERY_ASSESSMENTS = ["Sufficient", "Partially Sufficient", "Insufficient"]
+    # IMP Phase II impact axes (Functional Impact x Informational Impact).
+    IMP_IMPACT_LEVELS = ["None", "Limited", "Moderate", "Critical"]
+    # IMP Phase VI: every recommendation must resolve to one of these three.
+    RECOMMENDATION_DISPOSITIONS = ["Remediation", "Compensating Control", "Risk Acceptance"]
+    RECOMMENDATION_STATUSES = ["Open", "Complete"]

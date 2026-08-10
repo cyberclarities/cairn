@@ -52,6 +52,20 @@
   {% if case.board_flagged %}<span class="badge bg-dark"><i class="bi bi-flag"></i> Board Flagged</span>{% endif %}
   {% if case.case_type %}<span class="badge bg-light text-dark border">{{ case.case_type }}</span>{% endif %}
   <div class="ms-auto d-flex gap-2">
+    <div class="btn-group">
+      <button type="button" class="btn btn-outline-danger btn-sm dropdown-toggle" data-bs-toggle="dropdown">
+        <i class="bi bi-file-earmark-text"></i> Export Report
+      </button>
+      <ul class="dropdown-menu dropdown-menu-end">
+        <li><a class="dropdown-item" href="{{ url_for('case_report.print_report', case_id_int=case.id) }}" target="_blank">
+          <i class="bi bi-printer"></i> Print / Save as PDF</a></li>
+        <li><hr class="dropdown-divider"></li>
+        <li><a class="dropdown-item" href="{{ url_for('case_report.download_report_md', case_id_int=case.id) }}">
+          <i class="bi bi-filetype-md"></i> Download Markdown (.md)</a></li>
+        <li><a class="dropdown-item" href="{{ url_for('case_report.download_report_docx', case_id_int=case.id) }}">
+          <i class="bi bi-filetype-docx"></i> Download Word (.docx)</a></li>
+      </ul>
+    </div>
     {% if current_user.is_analyst %}
     <a href="{{ url_for('cases.edit_case', case_id_int=case.id) }}" class="btn btn-outline-secondary btn-sm">
       <i class="bi bi-pencil"></i> Edit Case
@@ -84,6 +98,7 @@
     ("iocs","IOCs (" + iocs|length|string + ")","bi-bug"),
     ("evidence","Evidence (" + evidence_items|length|string + ")","bi-archive"),
     ("timeline","Timeline (" + timeline_events|length|string + ")","bi-clock-history"),
+    ("report","Report","bi-file-earmark-text"),
     ("audit","Audit Log","bi-journal-text"),
   ] %}
   <li class="nav-item">
@@ -349,6 +364,188 @@
     </div>
     {% else %}
     <p class="text-muted small">No timeline events recorded yet.</p>
+    {% endif %}
+  </div>
+
+  <!-- REPORT TAB -->
+  <div class="tab-pane fade" id="report">
+    <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+      <a href="{{ url_for('case_report.download_report_md', case_id_int=case.id) }}" class="btn btn-sm btn-outline-danger">
+        <i class="bi bi-filetype-md"></i> Download Markdown
+      </a>
+      <a href="{{ url_for('case_report.download_report_docx', case_id_int=case.id) }}" class="btn btn-sm btn-outline-danger">
+        <i class="bi bi-filetype-docx"></i> Download Word
+      </a>
+      <span class="ms-2 small text-muted">Works right now, even with the fields below blank — download any time, refine as the investigation matures.</span>
+    </div>
+
+    {% if imp_severity %}
+    <div class="alert alert-secondary py-2 px-3 small mb-3">
+      <strong>IMP Classification: {{ imp_severity }}</strong> — Functional Impact: {{ case.imp_functional_impact }},
+      Informational Impact: {{ case.imp_informational_impact }}.
+      Closure requires approval from: <strong>{{ approval_authority }}</strong> (IMP §4.2 / §4.4).
+    </div>
+    {% else %}
+    <div class="alert alert-warning py-2 px-3 small mb-3">
+      <i class="bi bi-exclamation-triangle"></i> IMP severity not yet classified — set Functional and Informational Impact below
+      to compute it and determine closure approval authority.
+    </div>
+    {% endif %}
+
+    {% if current_user.is_analyst %}
+    <form method="POST" action="{{ url_for('case_report.save_report_fields', case_id_int=case.id) }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="row g-3">
+        <div class="col-12">
+          <div class="section-header">Incident Report Fields</div>
+        </div>
+
+        <div class="col-md-6">
+          <label class="form-label small fw-semibold">Method of Discovery</label>
+          <textarea name="method_of_discovery" class="form-control form-control-sm" rows="2"
+                    placeholder="Automated detection, user report, third party, audit finding…">{{ case.method_of_discovery or '' }}</textarea>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small fw-semibold">Root Cause</label>
+          <textarea name="root_cause" class="form-control form-control-sm" rows="2"
+                    placeholder="The underlying condition that made this possible, distinct from the initial vector…">{{ case.root_cause or '' }}</textarea>
+        </div>
+
+        <div class="col-md-4">
+          <label class="form-label small fw-semibold">IMP Functional Impact</label>
+          <select name="imp_functional_impact" class="form-select form-select-sm">
+            <option value="">— Not set —</option>
+            {% for level in config.IMP_IMPACT_LEVELS %}
+            <option {% if case.imp_functional_impact == level %}selected{% endif %}>{{ level }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small fw-semibold">IMP Informational Impact</label>
+          <select name="imp_informational_impact" class="form-select form-select-sm">
+            <option value="">— Not set —</option>
+            {% for level in config.IMP_IMPACT_LEVELS %}
+            <option {% if case.imp_informational_impact == level %}selected{% endif %}>{{ level }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small fw-semibold">Recovery Sufficiency</label>
+          <select name="recovery_sufficient" class="form-select form-select-sm">
+            <option value="">— Not set —</option>
+            {% for level in config.RECOVERY_ASSESSMENTS %}
+            <option {% if case.recovery_sufficient == level %}selected{% endif %}>{{ level }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="col-12">
+          <label class="form-label small fw-semibold">Recovery Sufficiency Assessment</label>
+          <textarea name="recovery_assessment" class="form-control form-control-sm" rows="2"
+                    placeholder="Backup verification, monitoring post-recovery, confirmation of no residual attacker activity…">{{ case.recovery_assessment or '' }}</textarea>
+        </div>
+
+        <div class="col-12"><div class="section-header mt-2">Lessons Learned Meeting (IMP Phase VI — within 5 business days of closure)</div></div>
+        <div class="col-md-4">
+          <label class="form-label small fw-semibold">Meeting Date</label>
+          <input type="date" name="lessons_learned_date" class="form-control form-control-sm"
+                 value="{{ case.lessons_learned_date.strftime('%Y-%m-%d') if case.lessons_learned_date else '' }}">
+        </div>
+        <div class="col-md-8">
+          <label class="form-label small fw-semibold">Attendees</label>
+          <input type="text" name="lessons_learned_attendees" class="form-control form-control-sm"
+                 placeholder="Names / roles" value="{{ case.lessons_learned_attendees or '' }}">
+        </div>
+        <div class="col-12">
+          <label class="form-label small fw-semibold">Meeting Notes</label>
+          <textarea name="lessons_learned_notes" class="form-control form-control-sm" rows="4"
+                    placeholder="What happened, and at what times? Were procedures followed? What information was needed sooner? What delayed the response? What would you do differently? How could external information-sharing improve?">{{ case.lessons_learned_notes or '' }}</textarea>
+        </div>
+
+        <div class="col-12">
+          <button type="submit" class="btn btn-sm btn-danger"><i class="bi bi-save"></i> Save Report Fields</button>
+        </div>
+      </div>
+    </form>
+    {% endif %}
+
+    <div class="section-header mt-4">Deviations from Standard Procedure</div>
+    {% if current_user.is_analyst %}
+    <button class="btn btn-sm btn-outline-danger mb-2" data-bs-toggle="modal" data-bs-target="#addDeviationModal">
+      <i class="bi bi-plus-lg"></i> Record Deviation
+    </button>
+    {% endif %}
+    {% if deviations %}
+    <div class="table-responsive mb-3">
+      <table class="table table-sm table-hover">
+        <thead><tr><th>Deviation</th><th>Standard Procedure</th><th>Justification</th><th>Approved By</th>{% if current_user.is_analyst %}<th></th>{% endif %}</tr></thead>
+        <tbody>
+        {% for d in deviations %}
+        <tr>
+          <td class="small">{{ d.deviation }}</td>
+          <td class="small text-muted">{{ d.standard_procedure or '—' }}</td>
+          <td class="small text-muted">{{ d.justification or '—' }}</td>
+          <td class="small">{{ d.approved_by or '—' }}</td>
+          {% if current_user.is_analyst %}
+          <td class="text-end">
+            <form method="POST" action="{{ url_for('case_report.delete_deviation', case_id_int=case.id, dev_id=d.id) }}"
+                  class="d-inline" onsubmit="return confirm('Remove this deviation record?')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="btn btn-xs btn-sm btn-outline-danger py-0 px-2"><i class="bi bi-trash"></i></button>
+            </form>
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="text-muted small">None recorded.</p>
+    {% endif %}
+
+    <div class="section-header mt-4">Recommendations</div>
+    {% if current_user.is_analyst %}
+    <button class="btn btn-sm btn-outline-danger mb-2" data-bs-toggle="modal" data-bs-target="#addRecommendationModal">
+      <i class="bi bi-plus-lg"></i> Add Recommendation
+    </button>
+    {% endif %}
+    {% if recommendations %}
+    <div class="table-responsive">
+      <table class="table table-sm table-hover">
+        <thead><tr><th>Recommendation</th><th>Disposition</th><th>Owner</th><th>Target</th><th>RTP Ref.</th><th>Status</th>{% if current_user.is_analyst %}<th></th>{% endif %}</tr></thead>
+        <tbody>
+        {% for r in recommendations %}
+        <tr>
+          <td class="small">{{ r.text }}</td>
+          <td><span class="badge bg-{{ r.disposition_color }}">{{ r.disposition }}</span></td>
+          <td class="small text-muted">{{ r.owner or '—' }}</td>
+          <td class="small text-muted">{{ r.target_date.strftime('%Y-%m-%d') if r.target_date else '—' }}</td>
+          <td class="small text-muted">{{ r.risk_treatment_ref or 'Pending' }}</td>
+          <td><span class="badge bg-{{ 'success' if r.status == 'Complete' else 'secondary' }}">{{ r.status }}</span></td>
+          {% if current_user.is_analyst %}
+          <td class="text-end">
+            <form method="POST" action="{{ url_for('case_report.edit_recommendation', case_id_int=case.id, rec_id=r.id) }}" class="d-inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="status" value="{{ 'Open' if r.status == 'Complete' else 'Complete' }}">
+              <button class="btn btn-xs btn-sm btn-outline-secondary py-0 px-2" title="{{ 'Reopen' if r.status == 'Complete' else 'Mark Complete' }}">
+                <i class="bi {{ 'bi-arrow-counterclockwise' if r.status == 'Complete' else 'bi-check-lg' }}"></i>
+              </button>
+            </form>
+            <form method="POST" action="{{ url_for('case_report.delete_recommendation', case_id_int=case.id, rec_id=r.id) }}"
+                  class="d-inline" onsubmit="return confirm('Remove this recommendation?')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="btn btn-xs btn-sm btn-outline-danger py-0 px-2"><i class="bi bi-trash"></i></button>
+            </form>
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="text-muted small">None recorded.</p>
     {% endif %}
   </div>
 
@@ -810,6 +1007,84 @@
         <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
         <button type="submit" class="btn btn-danger btn-sm">Save Changes</button>
       </div>
+    </form>
+  </div>
+</div>
+
+<!-- ADD DEVIATION MODAL -->
+<div class="modal fade" id="addDeviationModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <form method="POST" action="{{ url_for('case_report.add_deviation', case_id_int=case.id) }}" class="modal-content">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="modal-header"><h5 class="modal-title">Record Deviation from Standard Procedure</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div class="row g-3">
+          <div class="col-12">
+            <label class="form-label small fw-semibold">Deviation <span class="text-danger">*</span></label>
+            <textarea name="deviation" class="form-control form-control-sm" rows="2" required
+                      placeholder="What was done differently from the documented procedure…"></textarea>
+          </div>
+          <div class="col-12">
+            <label class="form-label small fw-semibold">Standard Procedure</label>
+            <textarea name="standard_procedure" class="form-control form-control-sm" rows="2"
+                      placeholder="What the IMP or a playbook calls for instead…"></textarea>
+          </div>
+          <div class="col-12">
+            <label class="form-label small fw-semibold">Justification</label>
+            <textarea name="justification" class="form-control form-control-sm" rows="2"
+                      placeholder="Why the deviation was reasonable given the circumstances…"></textarea>
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Approved By</label>
+            <input type="text" name="approved_by" class="form-control form-control-sm" placeholder="Name and role">
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer"><button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-danger btn-sm">Record Deviation</button></div>
+    </form>
+  </div>
+</div>
+
+<!-- ADD RECOMMENDATION MODAL -->
+<div class="modal fade" id="addRecommendationModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <form method="POST" action="{{ url_for('case_report.add_recommendation', case_id_int=case.id) }}" class="modal-content">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="modal-header"><h5 class="modal-title">Add Recommendation</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+      <div class="modal-body">
+        <div class="row g-3">
+          <div class="col-12">
+            <label class="form-label small fw-semibold">Recommendation <span class="text-danger">*</span></label>
+            <textarea name="text" class="form-control form-control-sm" rows="2" required></textarea>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Disposition</label>
+            <select name="disposition" class="form-select form-select-sm" id="recDispositionSelect" onchange="document.getElementById('recJustificationWrap').classList.toggle('d-none', this.value !== 'Risk Acceptance')">
+              {% for d in config.RECOMMENDATION_DISPOSITIONS %}<option {% if d == 'Remediation' %}selected{% endif %}>{{ d }}</option>{% endfor %}
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Owner</label>
+            <input type="text" name="owner" class="form-control form-control-sm" placeholder="Team or individual">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label small fw-semibold">Target Date</label>
+            <input type="date" name="target_date" class="form-control form-control-sm">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold">Risk Treatment Plan Ref.</label>
+            <input type="text" name="risk_treatment_ref" class="form-control form-control-sm" placeholder="Leave blank if not yet assigned">
+          </div>
+          <div class="col-12 d-none" id="recJustificationWrap">
+            <label class="form-label small fw-semibold">Risk Acceptance Justification <span class="text-danger">*</span></label>
+            <textarea name="risk_acceptance_justification" class="form-control form-control-sm" rows="2"
+                      placeholder="Required for Risk Acceptance — per IMP Phase VI, every accepted gap needs a documented justification."></textarea>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer"><button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-danger btn-sm">Add Recommendation</button></div>
     </form>
   </div>
 </div>

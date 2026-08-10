@@ -43,6 +43,7 @@ def create_app():
     from .routes.evidence import evidence_bp
     from .routes.timeline import timeline_bp
     from .routes.reports import reports_bp
+    from .routes.case_report import case_report_bp
     from .routes.users import users_bp
     from .routes.settings import settings_bp
     from .routes.alerts import alerts_bp
@@ -54,6 +55,7 @@ def create_app():
     app.register_blueprint(evidence_bp)
     app.register_blueprint(timeline_bp)
     app.register_blueprint(reports_bp)
+    app.register_blueprint(case_report_bp)
     app.register_blueprint(users_bp)
     app.register_blueprint(settings_bp)
     app.register_blueprint(alerts_bp)

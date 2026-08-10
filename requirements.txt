@@ -17,6 +17,8 @@ email-validator==2.2.0
 # gunicorn >= 23.0.0 — CVE-2024-6827 (TE.CL HTTP request smuggling)
 gunicorn==23.0.0
 psycopg2==2.9.10
+# AAR/incident report export (app/services/report_builder.py) — DOCX generation
+python-docx==1.2.0
 # Pure-Python IANA timezone database — python:3.12-alpine has no system
 # tzdata, and zoneinfo needs one for anything but UTC (timeline event entry).
 tzdata==2025.2

@@ -100,12 +100,60 @@ class Case(db.Model):
     created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     created_by = db.relationship("User", foreign_keys=[created_by_id])
 
+    # ── Incident Report / AAR fields ─────────────────────────────────────
+    # Everything below is nullable by design — a case with none of this
+    # filled in still produces a report; the renderer shows "not yet
+    # documented" placeholders instead of failing. See
+    # app/services/report_builder.py.
+
+    # Free text: how the incident was first identified (automated detection,
+    # user report, third party, audit finding, ...). IMP Phase VI requires
+    # this named explicitly in the formal Incident Report.
+    method_of_discovery = db.Column(db.Text, nullable=True)
+
+    # Distinct from initial_vector: initial_vector is the entry point (how
+    # the attacker got in); root_cause is the underlying condition that made
+    # it possible (e.g. "RDP exposed to the internet with a weak local admin
+    # credential"). Reports often need both.
+    root_cause = db.Column(db.Text, nullable=True)
+
+    # IMP Phase VI requires "assessment of recovery sufficiency" as a named
+    # judgment, not just a narrative of what was restored.
+    recovery_assessment = db.Column(db.Text, nullable=True)
+    recovery_sufficient = db.Column(db.String(32), nullable=True)
+    # Sufficient / Partially Sufficient / Insufficient — config.RECOVERY_ASSESSMENTS
+
+    # IMP Phase II severity classification matrix (Functional Impact x
+    # Informational Impact -> Sev. 1/2/3). Deliberately independent of
+    # `severity` above: that field drives Cairn's own triage/dashboard and
+    # stays a simple Critical/High/Medium/Low label; this pair is the IMP's
+    # own two-axis classification and determines closure sign-off authority
+    # per IMP §4.2/§4.4. Left blank rather than inferred from `severity` —
+    # the two scales don't map cleanly onto each other, and a guessed
+    # classification in a compliance document is worse than an honest blank.
+    imp_functional_impact = db.Column(db.String(16), nullable=True)
+    imp_informational_impact = db.Column(db.String(16), nullable=True)
+
+    # IMP Phase VI: Lessons Learned meeting must be held within 5 business
+    # days of closure. Recorded here so the report can state whether that
+    # SLA was met instead of asserting it.
+    lessons_learned_date = db.Column(db.Date, nullable=True)
+    lessons_learned_attendees = db.Column(db.Text, nullable=True)
+    # Free-form meeting notes. The Report tab prompts with the IMP's own
+    # meeting questions (were procedures followed, what delayed response,
+    # how could external information-sharing improve, ...) as guidance
+    # rather than splitting this into a rigid What-Went-Well/What-Could-
+    # Improve schema — it's meeting notes, not structured data.
+    lessons_learned_notes = db.Column(db.Text, nullable=True)
+
     # Relationships
     iocs = db.relationship("IOC", backref="case", lazy="dynamic", cascade="all, delete-orphan")
     evidence_items = db.relationship("Evidence", backref="case", lazy="dynamic", cascade="all, delete-orphan")
     timeline_events = db.relationship("TimelineEvent", backref="case", lazy="dynamic", cascade="all, delete-orphan")
     audit_entries = db.relationship("AuditLog", backref="case", lazy="dynamic", cascade="all, delete-orphan")
     status_history = db.relationship("CaseStatusHistory", backref="case", lazy="dynamic", cascade="all, delete-orphan")
+    deviations = db.relationship("CaseDeviation", backref="case", lazy="dynamic", cascade="all, delete-orphan")
+    recommendations = db.relationship("Recommendation", backref="case", lazy="dynamic", cascade="all, delete-orphan")
 
     @property
     def severity_color(self):
@@ -388,6 +436,72 @@ class CaseStatusHistory(db.Model):
     recorded_at = db.Column(db.DateTime, default=utcnow)
     recorded_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     recorded_by = db.relationship("User")
+
+
+# ---------------------------------------------------------------------------
+# Case Deviation — IMP Phase VI documentation requirement: deviations from
+# standard procedure must be recorded with a justification, not just noted
+# informally in a timeline entry.
+# ---------------------------------------------------------------------------
+
+class CaseDeviation(db.Model):
+    __tablename__ = "case_deviations"
+
+    id = db.Column(db.Integer, primary_key=True)
+    case_id = db.Column(db.Integer, db.ForeignKey("cases.id"), nullable=False, index=True)
+
+    deviation = db.Column(db.Text, nullable=False)
+    standard_procedure = db.Column(db.Text, nullable=True)
+    justification = db.Column(db.Text, nullable=True)
+    approved_by = db.Column(db.String(128), nullable=True)
+
+    created_at = db.Column(db.DateTime, default=utcnow)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    created_by = db.relationship("User")
+
+    def __repr__(self):
+        return f"<CaseDeviation case={self.case_id} {self.deviation[:40]!r}>"
+
+
+# ---------------------------------------------------------------------------
+# Recommendation — IMP Phase VI: every identified gap must resolve to
+# remediation, a compensating control, or a documented risk acceptance, and
+# feed the organizational risk treatment plan.
+# ---------------------------------------------------------------------------
+
+class Recommendation(db.Model):
+    __tablename__ = "recommendations"
+
+    id = db.Column(db.Integer, primary_key=True)
+    case_id = db.Column(db.Integer, db.ForeignKey("cases.id"), nullable=False, index=True)
+
+    text = db.Column(db.Text, nullable=False)
+    disposition = db.Column(db.String(32), nullable=False, default="Remediation")
+    # Remediation / Compensating Control / Risk Acceptance — config.RECOMMENDATION_DISPOSITIONS
+
+    owner = db.Column(db.String(128), nullable=True)
+    target_date = db.Column(db.Date, nullable=True)
+    risk_treatment_ref = db.Column(db.String(64), nullable=True)
+    status = db.Column(db.String(16), nullable=False, default="Open")  # Open / Complete
+
+    # Required (enforced at the route, not the schema — see case_report.py)
+    # when disposition is Risk Acceptance.
+    risk_acceptance_justification = db.Column(db.Text, nullable=True)
+
+    created_at = db.Column(db.DateTime, default=utcnow)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    created_by = db.relationship("User")
+
+    @property
+    def disposition_color(self):
+        return {
+            "Remediation": "success",
+            "Compensating Control": "warning",
+            "Risk Acceptance": "danger",
+        }.get(self.disposition, "secondary")
+
+    def __repr__(self):
+        return f"<Recommendation case={self.case_id} {self.disposition}>"
 
 
 # ---------------------------------------------------------------------------

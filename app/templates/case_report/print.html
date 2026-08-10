@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{ data.case_id }} — After Action Report</title>
+<style>
+  :root {
+    --navy: #1F3864;
+    --red: #C00000;
+    --grey: #595959;
+    --lightgrey: #F2F2F2;
+    --amber: #FDEBD0;
+    --border: #d0d7de;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: Calibri, "Segoe UI", Arial, sans-serif;
+    font-size: 10.5pt;
+    color: #1a1a1a;
+    max-width: 850px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+    line-height: 1.45;
+  }
+  .kicker { color: var(--red); font-weight: 700; font-size: 9pt; letter-spacing: 0.04em; margin-bottom: 0.25rem; }
+  h1 { color: var(--navy); font-size: 20pt; margin: 0 0 1rem; }
+  h2 {
+    color: var(--navy); font-size: 13pt; margin: 1.5rem 0 0.5rem;
+    border-bottom: 1px solid var(--border); padding-bottom: 0.2rem;
+  }
+  p { margin: 0 0 0.6rem; }
+  .placeholder { color: var(--grey); font-style: italic; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 0.75rem; }
+  th, td { text-align: left; padding: 0.4rem 0.55rem; font-size: 9.5pt; vertical-align: top; }
+  .info-table td:first-child { font-weight: 700; background: var(--lightgrey); width: 32%; }
+  .info-table tr.imp td:last-child { background: var(--amber); }
+  .data-table th { background: var(--navy); color: #fff; }
+  .data-table tr:nth-child(even) { background: var(--lightgrey); }
+  .note { font-size: 8.5pt; color: var(--grey); font-style: italic; }
+  .sig-line { margin-top: 1rem; }
+  .sig-line span { display: inline-block; border-bottom: 1px solid #333; min-width: 260px; margin-right: 2rem; }
+
+  /* Screen-only chrome */
+  #print-bar {
+    position: sticky; top: 0; background: #fff; border-bottom: 1px solid var(--border);
+    padding: 0.75rem 1.5rem; margin: -2rem -1.5rem 1.5rem; display: flex;
+    justify-content: flex-end; gap: 0.5rem; z-index: 10;
+  }
+  #print-bar button {
+    background: var(--navy); color: #fff; border: none; border-radius: 6px;
+    padding: 0.5rem 1rem; font-size: 0.9rem; cursor: pointer;
+  }
+  #print-bar button:hover { background: #16294a; }
+  #print-bar .hint { align-self: center; color: var(--grey); font-size: 0.8rem; margin-right: auto; }
+
+  @media print {
+    #print-bar { display: none; }
+    body { max-width: none; padding: 0; }
+    h2 { break-after: avoid; }
+    table, tr { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<div id="print-bar">
+  <span class="hint">Use your browser's print dialog to print, or choose "Save as PDF" as the destination.</span>
+  <button onclick="window.print()">Print / Save as PDF</button>
+</div>
+
+<div class="kicker">AFTER ACTION REPORT</div>
+<h1>{{ data.case_id }} — {{ data.title }}</h1>
+
+<table class="info-table">
+  <tr><td>Case ID</td><td>{{ data.case_id }}</td></tr>
+  <tr><td>Classification</td><td>{{ data.case_type }}</td></tr>
+  <tr><td>Cairn Severity</td><td>{{ data.cairn_severity }}</td></tr>
+  <tr class="imp">
+    <td>IMP Classification</td>
+    <td>
+      {% if data.imp_severity %}
+        {{ data.imp_severity }} (Functional Impact: {{ data.imp_functional_impact }}; Informational Impact: {{ data.imp_informational_impact }})
+      {% else %}
+        Not yet classified — set Functional and Informational Impact on the Report tab.
+      {% endif %}
+    </td>
+  </tr>
+  <tr><td>Status</td><td>{{ data.status }}</td></tr>
+  <tr><td>Lead Analyst</td><td>{{ data.lead_analyst }}</td></tr>
+  <tr>
+    <td>Escalated</td>
+    <td>{{ "Yes" if data.escalated else "No" }}{% if data.board_flagged %} — Board notified{% endif %}</td>
+  </tr>
+  <tr><td>Opened</td><td>{{ data.opened or "—" }}</td></tr>
+  <tr><td>Contained</td><td>{{ data.contained or "—" }}</td></tr>
+  <tr><td>Eradicated</td><td>{{ data.eradicated or "—" }}</td></tr>
+  <tr><td>Closed</td><td>{{ data.closed or "—" }}</td></tr>
+  <tr><td>Total Duration</td><td>{{ data.duration or "—" }}</td></tr>
+</table>
+
+<h2>Executive Summary</h2>
+<p>{{ data.description }}</p>
+
+<h2>Incident Overview</h2>
+<p><strong>Method of Discovery:</strong> {{ data.method_of_discovery }}</p>
+<p><strong>Initial Vector:</strong> {{ data.initial_vector }}</p>
+<p><strong>Affected Systems:</strong> {{ data.affected_systems }}</p>
+<p><strong>Affected Users:</strong> {{ data.affected_users }}</p>
+<p><strong>Estimated Impact:</strong> {{ data.estimated_impact }}</p>
+
+<h2>Timeline of Events</h2>
+{% if data.timeline %}
+<table class="data-table">
+  <tr><th>Time (UTC)</th><th>Phase</th><th>Description</th><th>MITRE ATT&amp;CK</th></tr>
+  {% for t in data.timeline %}
+  <tr><td>{{ t.time }}</td><td>{{ t.phase }}</td><td>{{ t.description }}</td><td>{{ t.mitre }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="placeholder">No timeline events recorded.</p>
+{% endif %}
+
+<h2>Indicators of Compromise</h2>
+{% if data.iocs %}
+<table class="data-table">
+  <tr><th>Type</th><th>Value</th><th>Description</th><th>Confidence</th></tr>
+  {% for i in data.iocs %}
+  <tr><td>{{ i.type }}</td><td>{{ i.value }}</td><td>{{ i.description }}</td><td>{{ i.confidence }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="placeholder">No IOCs recorded.</p>
+{% endif %}
+
+<h2>Evidence Collected</h2>
+{% if data.evidence %}
+<table class="data-table">
+  <tr><th>Evidence ID</th><th>Name</th><th>Type</th><th>Collected By</th><th>SHA-256</th></tr>
+  {% for e in data.evidence %}
+  <tr><td>{{ e.evidence_id }}</td><td>{{ e.name }}</td><td>{{ e.type }}</td><td>{{ e.collected_by }}</td><td>{{ e.sha256_short }}</td></tr>
+  {% endfor %}
+</table>
+<p class="note">Full chain-of-custody detail is retained in Cairn per each evidence record; hashes are truncated here for readability.</p>
+{% else %}
+<p class="placeholder">No evidence recorded.</p>
+{% endif %}
+
+<h2>Root Cause</h2>
+<p>{{ data.root_cause }}</p>
+
+<h2>Recovery Sufficiency Assessment</h2>
+<p><strong>Assessment: {{ data.recovery_sufficient or "Not yet assessed" }}.</strong></p>
+<p>{{ data.recovery_assessment }}</p>
+
+<h2>Deviations from Standard Procedure</h2>
+{% if data.deviations %}
+<table class="data-table">
+  <tr><th>Deviation</th><th>Standard Procedure</th><th>Justification</th><th>Approved By</th></tr>
+  {% for d in data.deviations %}
+  <tr><td>{{ d.deviation }}</td><td>{{ d.standard_procedure }}</td><td>{{ d.justification }}</td><td>{{ d.approved_by }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="placeholder">No deviations from standard procedure recorded.</p>
+{% endif %}
+
+<h2>Lessons Learned Meeting</h2>
+{% if data.lessons_learned_date %}
+  <p>
+    Held {{ data.lessons_learned_date }}
+    {% if data.lessons_learned_sla_met is not none %}
+      ({{ data.lessons_learned_business_days }} business days post-closure —
+      {% if data.lessons_learned_sla_met %}within{% else %}outside{% endif %}
+      the IMP's 5-business-day requirement)
+    {% endif %}.
+  </p>
+  <p><strong>Attendees:</strong> {{ data.lessons_learned_attendees }}</p>
+{% else %}
+<p class="placeholder">Not yet held or not yet recorded. IMP Phase VI requires this meeting within 5 business days of closure.</p>
+{% endif %}
+<p>{{ data.lessons_learned_notes }}</p>
+
+<h2>Recommendations</h2>
+{% if data.recommendations %}
+<table class="data-table">
+  <tr><th>#</th><th>Recommendation</th><th>Disposition</th><th>Owner</th><th>Target</th><th>RTP Ref.</th></tr>
+  {% for r in data.recommendations %}
+  <tr><td>{{ r.n }}</td><td>{{ r.text }}</td><td>{{ r.disposition }}</td><td>{{ r.owner }}</td><td>{{ r.target }}</td><td>{{ r.rtp_ref }}</td></tr>
+  {% endfor %}
+</table>
+<p class="note">Per IMP Phase VI, every identified gap must resolve to remediation, a compensating control, or a formal, documented risk acceptance, and be logged against the organizational risk treatment plan.</p>
+{% else %}
+<p class="placeholder">No recommendations recorded.</p>
+{% endif %}
+
+<h2>Case Status History</h2>
+{% if data.status_history %}
+<table class="data-table">
+  <tr><th>Date/Time</th><th>Change</th><th>Notes</th></tr>
+  {% for s in data.status_history %}
+  <tr><td>{{ s.date }}</td><td>{{ s.change }}</td><td>{{ s.notes }}</td></tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="placeholder">No status changes recorded.</p>
+{% endif %}
+
+<h2>Approval</h2>
+{% if data.imp_severity %}
+<p><strong>Approval authority (per IMP §4.2 / §4.4):</strong> This incident is classified {{ data.imp_severity }}. Closure requires approval from: {{ data.approval_authority }}.</p>
+{% else %}
+<p><strong>Approval authority:</strong> Not yet determined — set Functional and Informational Impact on the Report tab to compute the IMP severity classification and required approver.</p>
+{% endif %}
+<p class="note">Report generated from Cairn case {{ data.case_id }} on {{ data.generated_at }}. Prepared by {{ data.prepared_by }}.</p>
+
+<div class="sig-line">
+  Approved by: <span>&nbsp;</span> Date: <span style="min-width:140px;">&nbsp;</span>
+</div>
+
+</body>
+</html>
