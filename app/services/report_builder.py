@@ -102,10 +102,40 @@ def _or_placeholder(value, placeholder="Not yet documented."):
     return value
 
 
-def _short_hash(h, length=12):
-    if not h:
-        return "—"
-    return h[:length] + "..." if len(h) > length else h
+# XML 1.0 permits only #x9, #xA, #xD and #x20+ in this range. python-docx
+# raises ValueError on anything else rather than sanitizing, so a single stray
+# control character anywhere in the case text failed the whole .docx download
+# with a 500 while the Markdown export succeeded — the analyst saw a broken
+# button, not a bad character. \x0b in particular is Word's own soft line
+# break, so text pasted out of Word, a PDF, or an alert body carries it in
+# routinely.
+_XML_UNSAFE_TABLE = str.maketrans({c: None for c in range(32) if c not in (9, 10)})
+
+
+def _clean(value):
+    r"""Return *value* as a string safe to write into a Word document.
+
+    Drops XML-illegal control characters and collapses CRLF to LF. The CRLF
+    step earns its place on its own: browsers submit textarea content with
+    CRLF, and python-docx turns \r and \n each into their own <w:br/>, which
+    double-spaced every newline the analyst typed.
+    """
+    if value is None:
+        return ""
+    text = str(value)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text.translate(_XML_UNSAFE_TABLE)
+
+
+def _md_cell(value):
+    """Escape *value* for use inside a Markdown table cell.
+
+    An unescaped pipe closes the column early and a newline ends the row, so
+    one multi-line description silently tore the rest of the table apart.
+    Markdown table cells are single-line by construction; the break becomes
+    an inline <br>.
+    """
+    return _clean(value).replace("|", "\\|").replace("\n", "<br>")
 
 
 # ---------------------------------------------------------------------------
@@ -135,9 +165,11 @@ def build_report_data(case):
 
     timeline = []
     for ev in timeline_events:
-        mitre = "—"
-        if ev.mitre_tactic or ev.mitre_technique_id:
-            mitre = " — ".join(x for x in [ev.mitre_tactic, ev.mitre_technique_id] if x)
+        # Tactic, technique ID and the readable technique name. The name used
+        # to be dropped, which left the reader holding a bare "T1566.002" and
+        # a lookup to go do.
+        mitre_parts = [x for x in (ev.mitre_tactic, ev.mitre_technique_id, ev.mitre_technique) if x]
+        mitre = " — ".join(mitre_parts) if mitre_parts else "—"
         timeline.append({
             "time": _fmt_dt(ev.event_datetime),
             "phase": ev.category or "—",
@@ -152,13 +184,25 @@ def build_report_data(case):
         "confidence": i.confidence or "—",
     } for i in iocs]
 
+    # Hashes are carried in full, not as a prefix. A 12-character stub reads
+    # fine on screen but cannot be verified against anything, and this report
+    # leaves the building — to counsel, to an insurer, to an examiner. They
+    # ride in their own block below the table rather than as a sixth column,
+    # because 64 characters will not sit in a portrait-page cell.
     evidence_rows = [{
         "evidence_id": e.evidence_id,
         "name": e.name,
         "type": e.evidence_type or "—",
         "collected_by": e.collected_by or "—",
-        "sha256_short": _short_hash(e.hash_sha256),
+        "sha256": e.hash_sha256 or "",
+        "md5": e.hash_md5 or "",
     } for e in evidence_items]
+
+    evidence_hashes = [{
+        "evidence_id": e["evidence_id"],
+        "algorithm": "SHA-256" if e["sha256"] else "MD5",
+        "digest": e["sha256"] or e["md5"],
+    } for e in evidence_rows if e["sha256"] or e["md5"]]
 
     deviation_rows = [{
         "deviation": d.deviation,
@@ -175,7 +219,19 @@ def build_report_data(case):
         "target": _fmt_date(r.target_date) or "—",
         "rtp_ref": r.risk_treatment_ref or "Pending",
         "status": r.status,
+        "justification": (r.risk_acceptance_justification or "").strip(),
     } for idx, r in enumerate(recommendations)]
+
+    # IMP Phase VI requires a risk acceptance to carry a documented
+    # justification, and the Report tab refuses to save one without it. The
+    # export dropped it anyway, so the AAR showed "Risk Acceptance" with the
+    # reasoning nowhere in the document. Pulled out here so every renderer
+    # states it beneath the table without widening the table to hold it.
+    risk_acceptances = [
+        {"n": r["n"], "justification": r["justification"]}
+        for r in recommendation_rows
+        if r["disposition"] == "Risk Acceptance" and r["justification"]
+    ]
 
     status_history_rows = [{
         "date": _fmt_dt(s.recorded_at),
@@ -220,6 +276,7 @@ def build_report_data(case):
 
         "iocs": ioc_rows,
         "evidence": evidence_rows,
+        "evidence_hashes": evidence_hashes,
 
         "root_cause": _or_placeholder(case.root_cause),
 
@@ -235,6 +292,7 @@ def build_report_data(case):
         "lessons_learned_business_days": ll_business_days,
 
         "recommendations": recommendation_rows,
+        "risk_acceptances": risk_acceptances,
 
         "status_history": status_history_rows,
 
@@ -304,7 +362,8 @@ def render_markdown(data: dict) -> str:
         a("| Time (UTC) | Phase | Description | MITRE ATT&CK |")
         a("|---|---|---|---|")
         for t in data["timeline"]:
-            a(f"| {t['time']} | {t['phase']} | {t['description']} | {t['mitre']} |")
+            a(f"| {_md_cell(t['time'])} | {_md_cell(t['phase'])} | "
+              f"{_md_cell(t['description'])} | {_md_cell(t['mitre'])} |")
     else:
         a("No timeline events recorded.")
     a("")
@@ -315,7 +374,8 @@ def render_markdown(data: dict) -> str:
         a("| Type | Value | Description | Confidence |")
         a("|---|---|---|---|")
         for i in data["iocs"]:
-            a(f"| {i['type']} | {i['value']} | {i['description']} | {i['confidence']} |")
+            a(f"| {_md_cell(i['type'])} | {_md_cell(i['value'])} | "
+              f"{_md_cell(i['description'])} | {_md_cell(i['confidence'])} |")
     else:
         a("No IOCs recorded.")
     a("")
@@ -323,12 +383,19 @@ def render_markdown(data: dict) -> str:
     a("## Evidence Collected")
     a("")
     if data["evidence"]:
-        a("| Evidence ID | Name | Type | Collected By | SHA-256 |")
-        a("|---|---|---|---|---|")
+        a("| Evidence ID | Name | Type | Collected By |")
+        a("|---|---|---|---|")
         for e in data["evidence"]:
-            a(f"| {e['evidence_id']} | {e['name']} | {e['type']} | {e['collected_by']} | {e['sha256_short']} |")
+            a(f"| {_md_cell(e['evidence_id'])} | {_md_cell(e['name'])} | "
+              f"{_md_cell(e['type'])} | {_md_cell(e['collected_by'])} |")
         a("")
-        a("*Full chain-of-custody detail is retained in Cairn per each evidence record; hashes are truncated here for readability.*")
+        if data["evidence_hashes"]:
+            a("**Integrity hashes**")
+            a("")
+            for h in data["evidence_hashes"]:
+                a(f"- `{h['evidence_id']}` — {h['algorithm']}: `{h['digest']}`")
+            a("")
+        a("*Full chain-of-custody detail is retained in Cairn per each evidence record.*")
     else:
         a("No evidence recorded.")
     a("")
@@ -351,7 +418,8 @@ def render_markdown(data: dict) -> str:
         a("| Deviation | Standard Procedure | Justification | Approved By |")
         a("|---|---|---|---|")
         for d in data["deviations"]:
-            a(f"| {d['deviation']} | {d['standard_procedure']} | {d['justification']} | {d['approved_by']} |")
+            a(f"| {_md_cell(d['deviation'])} | {_md_cell(d['standard_procedure'])} | "
+              f"{_md_cell(d['justification'])} | {_md_cell(d['approved_by'])} |")
     else:
         a("No deviations from standard procedure recorded.")
     a("")
@@ -376,11 +444,19 @@ def render_markdown(data: dict) -> str:
     a("## Recommendations")
     a("")
     if data["recommendations"]:
-        a("| # | Recommendation | Disposition | Owner | Target | RTP Ref. |")
-        a("|---|---|---|---|---|---|")
+        a("| # | Recommendation | Disposition | Owner | Target | RTP Ref. | Status |")
+        a("|---|---|---|---|---|---|---|")
         for r in data["recommendations"]:
-            a(f"| {r['n']} | {r['text']} | {r['disposition']} | {r['owner']} | {r['target']} | {r['rtp_ref']} |")
+            a(f"| {r['n']} | {_md_cell(r['text'])} | {_md_cell(r['disposition'])} | "
+              f"{_md_cell(r['owner'])} | {_md_cell(r['target'])} | "
+              f"{_md_cell(r['rtp_ref'])} | {_md_cell(r['status'])} |")
         a("")
+        if data["risk_acceptances"]:
+            a("**Documented risk acceptances (IMP Phase VI)**")
+            a("")
+            for ra in data["risk_acceptances"]:
+                a(f"- **#{ra['n']}:** {ra['justification']}")
+            a("")
         a("*Per IMP Phase VI, every identified gap must resolve to remediation, a compensating control, or a formal, documented risk acceptance, and be logged against the organizational risk treatment plan.*")
     else:
         a("No recommendations recorded.")
@@ -392,7 +468,7 @@ def render_markdown(data: dict) -> str:
         a("| Date/Time | Change | Notes |")
         a("|---|---|---|")
         for s in data["status_history"]:
-            a(f"| {s['date']} | {s['change']} | {s['notes']} |")
+            a(f"| {_md_cell(s['date'])} | {_md_cell(s['change'])} | {_md_cell(s['notes'])} |")
     else:
         a("No status changes recorded.")
     a("")
@@ -467,7 +543,7 @@ def render_docx(data: dict) -> io.BytesIO:
     def set_cell_text(cell, text, bold=False, color=None, size=9.5, italic=False):
         cell.text = ""
         p = cell.paragraphs[0]
-        run = p.add_run(str(text))
+        run = p.add_run(_clean(text))
         run.bold = bold
         run.italic = italic
         run.font.size = Pt(size)
@@ -475,9 +551,16 @@ def render_docx(data: dict) -> io.BytesIO:
             run.font.color.rgb = color
 
     def add_table(headers, rows, widths=None):
+        """Render a table. *widths* is an optional list of Inches per column.
+
+        Word's autofit divides the page evenly and then squeezes, which turns
+        a long narrative column into a ribbon next to five short ones. Passing
+        explicit widths gives the prose the room and holds the label columns
+        to what they actually need.
+        """
         table = doc.add_table(rows=1, cols=len(headers))
         table.alignment = WD_TABLE_ALIGNMENT.CENTER
-        table.autofit = True
+        table.autofit = widths is None
         hdr = table.rows[0].cells
         for i, h in enumerate(headers):
             set_cell_text(hdr[i], h, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF), size=9.5)
@@ -488,6 +571,12 @@ def render_docx(data: dict) -> io.BytesIO:
                 set_cell_text(cells[i], val, size=9.5)
                 if ri % 2 == 1:
                     shade_cell(cells[i], LIGHTGREY)
+        if widths:
+            # Width has to be set on every cell in a column, not just the
+            # column object — Word reads the cell-level value.
+            for row in table.rows:
+                for i, w in enumerate(widths[:len(headers)]):
+                    row.cells[i].width = w
         doc.add_paragraph()
         return table
 
@@ -508,7 +597,7 @@ def render_docx(data: dict) -> io.BytesIO:
 
     def add_para(text, bold=False, italic=False, color=None, size=None):
         p = doc.add_paragraph()
-        run = p.add_run(str(text))
+        run = p.add_run(_clean(text))
         run.bold = bold
         run.italic = italic
         if color:
@@ -566,6 +655,7 @@ def render_docx(data: dict) -> io.BytesIO:
         add_table(
             ["Time (UTC)", "Phase", "Description", "MITRE ATT&CK"],
             [[t["time"], t["phase"], t["description"], t["mitre"]] for t in data["timeline"]],
+            widths=[Inches(1.1), Inches(1.0), Inches(3.1), Inches(1.8)],
         )
     else:
         add_para("No timeline events recorded.", italic=True, color=GREY)
@@ -575,6 +665,7 @@ def render_docx(data: dict) -> io.BytesIO:
         add_table(
             ["Type", "Value", "Description", "Confidence"],
             [[i["type"], i["value"], i["description"], i["confidence"]] for i in data["iocs"]],
+            widths=[Inches(1.0), Inches(2.2), Inches(2.9), Inches(0.9)],
         )
     else:
         add_para("No IOCs recorded.", italic=True, color=GREY)
@@ -582,12 +673,21 @@ def render_docx(data: dict) -> io.BytesIO:
     add_heading("Evidence Collected")
     if data["evidence"]:
         add_table(
-            ["Evidence ID", "Name", "Type", "Collected By", "SHA-256"],
-            [[e["evidence_id"], e["name"], e["type"], e["collected_by"], e["sha256_short"]] for e in data["evidence"]],
+            ["Evidence ID", "Name", "Type", "Collected By"],
+            [[e["evidence_id"], e["name"], e["type"], e["collected_by"]] for e in data["evidence"]],
+            widths=[Inches(1.1), Inches(2.6), Inches(1.6), Inches(1.7)],
         )
+        if data["evidence_hashes"]:
+            add_para("Integrity hashes", bold=True, size=9.5)
+            for h in data["evidence_hashes"]:
+                p = doc.add_paragraph()
+                lbl = p.add_run(f"{h['evidence_id']} — {h['algorithm']}: ")
+                lbl.font.size = Pt(8.5)
+                dig = p.add_run(_clean(h["digest"]))
+                dig.font.name = "Consolas"
+                dig.font.size = Pt(8.5)
         add_para(
-            "Full chain-of-custody detail is retained in Cairn per each evidence record; "
-            "hashes are truncated here for readability.",
+            "Full chain-of-custody detail is retained in Cairn per each evidence record.",
             italic=True, color=GREY, size=8.5,
         )
     else:
@@ -605,6 +705,7 @@ def render_docx(data: dict) -> io.BytesIO:
         add_table(
             ["Deviation", "Standard Procedure", "Justification", "Approved By"],
             [[d["deviation"], d["standard_procedure"], d["justification"], d["approved_by"]] for d in data["deviations"]],
+            widths=[Inches(1.9), Inches(1.9), Inches(2.3), Inches(0.9)],
         )
     else:
         add_para("No deviations from standard procedure recorded.", italic=True, color=GREY)
@@ -629,9 +730,16 @@ def render_docx(data: dict) -> io.BytesIO:
     add_heading("Recommendations")
     if data["recommendations"]:
         add_table(
-            ["#", "Recommendation", "Disposition", "Owner", "Target", "RTP Ref."],
-            [[r["n"], r["text"], r["disposition"], r["owner"], r["target"], r["rtp_ref"]] for r in data["recommendations"]],
+            ["#", "Recommendation", "Disposition", "Owner", "Target", "RTP Ref.", "Status"],
+            [[r["n"], r["text"], r["disposition"], r["owner"], r["target"], r["rtp_ref"], r["status"]]
+             for r in data["recommendations"]],
+            widths=[Inches(0.35), Inches(2.35), Inches(1.2), Inches(0.9),
+                    Inches(0.8), Inches(0.75), Inches(0.65)],
         )
+        if data["risk_acceptances"]:
+            add_para("Documented risk acceptances (IMP Phase VI)", bold=True, size=9.5)
+            for ra in data["risk_acceptances"]:
+                add_para(f"#{ra['n']}: {ra['justification']}", size=9)
         add_para(
             "Per IMP Phase VI, every identified gap must resolve to remediation, a compensating "
             "control, or a formal, documented risk acceptance, and be logged against the "
@@ -646,6 +754,7 @@ def render_docx(data: dict) -> io.BytesIO:
         add_table(
             ["Date/Time", "Change", "Notes"],
             [[s["date"], s["change"], s["notes"]] for s in data["status_history"]],
+            widths=[Inches(1.3), Inches(1.9), Inches(3.8)],
         )
     else:
         add_para("No status changes recorded.", italic=True, color=GREY)

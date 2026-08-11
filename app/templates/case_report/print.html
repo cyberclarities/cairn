@@ -37,6 +37,11 @@
   .data-table th { background: var(--navy); color: #fff; }
   .data-table tr:nth-child(even) { background: var(--lightgrey); }
   .note { font-size: 8.5pt; color: var(--grey); font-style: italic; }
+  /* A 64-character digest has no break opportunity of its own; without the
+     wrap rule it runs off the right edge of the printed page. */
+  .hash-list { font-size: 8.5pt; list-style: none; padding-left: 0; }
+  .hash-list code { font-family: Consolas, "Courier New", monospace;
+                    overflow-wrap: anywhere; word-break: break-all; }
   .sig-line { margin-top: 1rem; }
   .sig-line span { display: inline-block; border-bottom: 1px solid #333; min-width: 260px; margin-right: 2rem; }
 
@@ -135,12 +140,20 @@
 <h2>Evidence Collected</h2>
 {% if data.evidence %}
 <table class="data-table">
-  <tr><th>Evidence ID</th><th>Name</th><th>Type</th><th>Collected By</th><th>SHA-256</th></tr>
+  <tr><th>Evidence ID</th><th>Name</th><th>Type</th><th>Collected By</th></tr>
   {% for e in data.evidence %}
-  <tr><td>{{ e.evidence_id }}</td><td>{{ e.name }}</td><td>{{ e.type }}</td><td>{{ e.collected_by }}</td><td>{{ e.sha256_short }}</td></tr>
+  <tr><td>{{ e.evidence_id }}</td><td>{{ e.name }}</td><td>{{ e.type }}</td><td>{{ e.collected_by }}</td></tr>
   {% endfor %}
 </table>
-<p class="note">Full chain-of-custody detail is retained in Cairn per each evidence record; hashes are truncated here for readability.</p>
+{% if data.evidence_hashes %}
+<p><strong>Integrity hashes</strong></p>
+<ul class="hash-list">
+  {% for h in data.evidence_hashes %}
+  <li>{{ h.evidence_id }} — {{ h.algorithm }}: <code>{{ h.digest }}</code></li>
+  {% endfor %}
+</ul>
+{% endif %}
+<p class="note">Full chain-of-custody detail is retained in Cairn per each evidence record.</p>
 {% else %}
 <p class="placeholder">No evidence recorded.</p>
 {% endif %}
@@ -183,11 +196,19 @@
 <h2>Recommendations</h2>
 {% if data.recommendations %}
 <table class="data-table">
-  <tr><th>#</th><th>Recommendation</th><th>Disposition</th><th>Owner</th><th>Target</th><th>RTP Ref.</th></tr>
+  <tr><th>#</th><th>Recommendation</th><th>Disposition</th><th>Owner</th><th>Target</th><th>RTP Ref.</th><th>Status</th></tr>
   {% for r in data.recommendations %}
-  <tr><td>{{ r.n }}</td><td>{{ r.text }}</td><td>{{ r.disposition }}</td><td>{{ r.owner }}</td><td>{{ r.target }}</td><td>{{ r.rtp_ref }}</td></tr>
+  <tr><td>{{ r.n }}</td><td>{{ r.text }}</td><td>{{ r.disposition }}</td><td>{{ r.owner }}</td><td>{{ r.target }}</td><td>{{ r.rtp_ref }}</td><td>{{ r.status }}</td></tr>
   {% endfor %}
 </table>
+{% if data.risk_acceptances %}
+<p><strong>Documented risk acceptances (IMP Phase VI)</strong></p>
+<ul>
+  {% for ra in data.risk_acceptances %}
+  <li><strong>#{{ ra.n }}:</strong> {{ ra.justification }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
 <p class="note">Per IMP Phase VI, every identified gap must resolve to remediation, a compensating control, or a formal, documented risk acceptance, and be logged against the organizational risk treatment plan.</p>
 {% else %}
 <p class="placeholder">No recommendations recorded.</p>
