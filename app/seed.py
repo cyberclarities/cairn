@@ -387,8 +387,29 @@ def _backfill_id_counters(app):
     db.session.commit()
 
 
+# Bootstrap admin passwords that must never reach a running deployment. The
+# first entry shipped as the default in config.py and in .env.example, so it is
+# the one most likely to be sitting in somebody's .env untouched.
+_REJECTED_ADMIN_PASSWORDS = {
+    "",
+    "changeme123!",
+    "changeme",
+    "change-me",
+    "password",
+    "password123",
+    "admin",
+    "cairn",
+}
+
+# Matches users.MIN_PASSWORD_LENGTH — the bootstrap account should not be held
+# to a lower standard than one created through the admin UI.
+MIN_ADMIN_PASSWORD_LENGTH = 12
+
+
 def seed_database(app):
     """Seed lookup values and create bootstrap admin if the database is empty."""
+    import os
+
     from sqlalchemy import inspect
 
     from app.models import db, User, LookupValue
@@ -432,6 +453,37 @@ def seed_database(app):
             if not username:
                 raise RuntimeError("ADMIN_USERNAME must be set to bootstrap the first admin.")
 
+            # Refuse to create the first admin with a placeholder.
+            #
+            # This is the account that can download the entire database and
+            # restore over it. A guessable password on it is not a weak password,
+            # it is the whole compromise. SECRET_KEY and DATABASE_URL already
+            # refuse to start on a placeholder for the same reason (see
+            # app/config.py); this closes the one that was left with a working
+            # default and a log line.
+            #
+            # Only reached when there are no users at all, so an existing
+            # deployment is unaffected.
+            if (password.strip().lower() in _REJECTED_ADMIN_PASSWORDS
+                    or len(password) < MIN_ADMIN_PASSWORD_LENGTH):
+                if os.environ.get("ALLOW_INSECURE_ADMIN_PASSWORD", "").lower() != "true":
+                    raise RuntimeError(
+                        "Refusing to create the bootstrap admin account: "
+                        "ADMIN_PASSWORD is unset, a known placeholder, or shorter "
+                        f"than {MIN_ADMIN_PASSWORD_LENGTH} characters.\n\n"
+                        "This account can download and overwrite the whole "
+                        "database. Set ADMIN_PASSWORD in .env to something "
+                        "generated, e.g.:\n"
+                        "  openssl rand -base64 24\n\n"
+                        "For local development only, set "
+                        "ALLOW_INSECURE_ADMIN_PASSWORD=true."
+                    )
+                c_app.logger.warning(
+                    "Bootstrap admin '%s' created with a weak password because "
+                    "ALLOW_INSECURE_ADMIN_PASSWORD=true. Never set that outside "
+                    "local development.", username,
+                )
+
             u = User(
                 username=username,
                 email=c_app.config["ADMIN_EMAIL"].strip().lower(),
@@ -442,9 +494,4 @@ def seed_database(app):
             u.set_password(password)
             db.session.add(u)
             db.session.commit()
-
-            if password == "ChangeMe123!":
-                c_app.logger.warning(
-                    "Bootstrap admin '%s' was created with the default password. "
-                    "Change it immediately.", username
-                )
+            c_app.logger.info("Bootstrap admin '%s' created.", username)

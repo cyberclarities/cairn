@@ -70,6 +70,42 @@ def _pg_env(password: str) -> dict:
     return {**os.environ, "PGPASSWORD": password}
 
 
+class _DumpTooLarge(Exception):
+    """An uploaded .sql.gz expanded past MAX_RESTORE_UNCOMPRESSED_BYTES."""
+
+
+# Read size for the bounded decompressor below.
+_GUNZIP_CHUNK = 4 * 1024 * 1024  # 4 MiB
+
+
+def _gunzip_bounded(data: bytes, limit: int) -> bytes:
+    """
+    Decompress *data*, giving up once the output passes *limit* bytes.
+
+    gzip.decompress() has no ceiling. MAX_UPLOAD_MB caps the compressed upload,
+    but a gzip of null bytes runs about 1000:1, so a 10 MB file that satisfies
+    every check in restore_db() used to become roughly 10 GB right here — and the
+    SET-filtering pass further down then held several copies of it at once. With
+    --workers 1 the OOM kill takes the whole console down, alert queue included,
+    in the middle of whatever incident it was being used for.
+
+    Reading in chunks and counting costs one chunk of memory and an error message
+    instead of the worker process.
+    """
+    out = io.BytesIO()
+    total = 0
+    with gzip.GzipFile(fileobj=io.BytesIO(data), mode="rb") as gz:
+        while True:
+            chunk = gz.read(_GUNZIP_CHUNK)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise _DumpTooLarge(total)
+            out.write(chunk)
+    return out.getvalue()
+
+
 def _dump_to_path(params: dict, dest_path: str, timeout: int = 300) -> tuple[bool, str]:
     """
     Run pg_dump into *dest_path*. Returns (ok, error_text).
@@ -444,10 +480,25 @@ def restore_db():
 
     raw = uploaded.read()
 
-    # Decompress if needed
+    # Decompress if needed, with a ceiling — see _gunzip_bounded.
     if fname.endswith(".gz"):
+        limit = current_app.config["MAX_RESTORE_UNCOMPRESSED_BYTES"]
         try:
-            raw = gzip.decompress(raw)
+            raw = _gunzip_bounded(raw, limit)
+        except _DumpTooLarge:
+            log.warning(
+                "restore_db: upload %r expands past the %d-byte ceiling; refused",
+                uploaded.filename, limit,
+            )
+            flash(
+                f"This file expands to more than {limit // (1024 * 1024)} MB "
+                f"uncompressed, which CAIRN will not load into memory. If your "
+                f"database really is that large, restore it with psql on the "
+                f"database host, or raise MAX_RESTORE_UNCOMPRESSED_MB. The "
+                f"database was left untouched.",
+                "danger",
+            )
+            return redirect(url_for("settings.index") + "#database")
         except Exception as exc:
             flash(f"Could not decompress file: {exc}", "danger")
             return redirect(url_for("settings.index") + "#database")
@@ -528,18 +579,22 @@ def restore_db():
 
     # Strip SET statements for parameters introduced in newer PostgreSQL versions
     # (e.g. transaction_timeout added in PG17 — unknown to PG16 and earlier).
-    _UNSUPPORTED_SET = {
-        "transaction_timeout",
-    }
-    filtered_lines = []
-    for line in raw.decode("utf-8", errors="replace").splitlines(keepends=True):
+    # Done on bytes rather than decoded text: the old version held the decoded
+    # string, a list of every line in it, the joined result, and the re-encoded
+    # bytes simultaneously — four copies of the whole dump. Staying in bytes and
+    # writing through a buffer drops that to two.
+    _UNSUPPORTED_SET = (
+        b"transaction_timeout",
+    )
+    filtered = io.BytesIO()
+    for line in raw.splitlines(keepends=True):
         stripped = line.strip().lower()
-        if stripped.startswith("set ") and any(
-            stripped.startswith(f"set {p}") for p in _UNSUPPORTED_SET
+        if stripped.startswith(b"set ") and any(
+            stripped.startswith(b"set " + p) for p in _UNSUPPORTED_SET
         ):
             continue
-        filtered_lines.append(line)
-    raw = "".join(filtered_lines).encode("utf-8")
+        filtered.write(line)
+    raw = filtered.getvalue()
 
     try:
         return _perform_restore(raw, uploaded.filename, db_url)

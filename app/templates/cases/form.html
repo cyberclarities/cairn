@@ -140,19 +140,48 @@
           </div>
 
           {% if current_user.is_admin and case %}
-          <!-- Danger zone -->
+          <!-- Danger zone.
+               Posts to settings.delete_case, which takes a pre-delete database
+               snapshot, re-checks the typed case ID server-side, and unlinks any
+               promoted alerts. The button builds its own form rather than using
+               formaction on the surrounding edit form, because this needs to
+               carry confirm_case_id and a form cannot nest inside another. -->
           <div class="card border-danger mb-3">
             <div class="card-header bg-white text-danger fw-semibold small">Danger Zone</div>
             <div class="card-body">
-              <button type="submit"
+              <p class="small text-muted mb-2">
+                Deletes this case and every IOC, evidence record, timeline event and
+                audit entry on it. A full database snapshot is taken first.
+              </p>
+              <button type="button"
                       class="btn btn-outline-danger btn-sm w-100"
-                      formaction="{{ url_for('cases.delete_case', case_id_int=case.id) }}"
-                      formmethod="post"
-                      onclick="return confirm('Permanently delete {{ case.case_id }}? This cannot be undone.')">
+                      onclick="cairnDeleteCase()">
                 <i class="bi bi-trash"></i> Delete Case
               </button>
             </div>
           </div>
+          <script>
+          function cairnDeleteCase() {
+            var caseId = {{ case.case_id | tojson }};
+            var typed = prompt(
+              'This permanently deletes ' + caseId + ' and all of its IOCs, evidence, ' +
+              'and timeline events.\n\nA full database snapshot is taken first.\n\n' +
+              'Type the case ID (' + caseId + ') to confirm:'
+            );
+            if (typed === null) { return; }
+            var f = document.createElement('form');
+            f.method = 'POST';
+            f.action = {{ url_for('settings.delete_case', case_id_int=case.id) | tojson }};
+            var t = document.createElement('input');
+            t.type = 'hidden'; t.name = 'csrf_token'; t.value = {{ csrf_token() | tojson }};
+            f.appendChild(t);
+            var c = document.createElement('input');
+            c.type = 'hidden'; c.name = 'confirm_case_id'; c.value = typed;
+            f.appendChild(c);
+            document.body.appendChild(f);
+            f.submit();
+          }
+          </script>
           {% endif %}
         </div>
       </div>

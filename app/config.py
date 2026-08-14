@@ -69,6 +69,17 @@ class Config:
 
     # Reject oversized uploads outright (restore accepts .sql/.sql.gz dumps).
     MAX_CONTENT_LENGTH = int(os.environ.get("MAX_UPLOAD_MB", 512)) * 1024 * 1024
+
+    # Ceiling on a restore dump *after* decompression. MAX_UPLOAD_MB bounds the
+    # compressed upload; nothing bounded the expansion, and gzipped null bytes
+    # run about 1000:1. Keep this well under the web container's mem_limit (2g in
+    # docker-compose.yml) — the restore path holds roughly three copies of the
+    # decompressed dump while it filters unsupported SET statements. A database
+    # whose dump is genuinely larger should be restored with psql on the database
+    # host, not through a browser upload.
+    MAX_RESTORE_UNCOMPRESSED_BYTES = (
+        int(os.environ.get("MAX_RESTORE_UNCOMPRESSED_MB", 512)) * 1024 * 1024
+    )
     # Connection pool settings (PostgreSQL)
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_pre_ping": True,    # Verify connections before use (handles idle timeouts)
@@ -88,11 +99,21 @@ class Config:
     # this path isn't writable, but that fallback does not survive a restart.
     EVIDENCE_STORAGE_PATH = os.environ.get("EVIDENCE_STORAGE_PATH", "/app/data/evidence")
 
-    # Bootstrap admin (used once on first start)
+    # Bootstrap admin (used once, on first start, to create the initial account).
+    #
+    # No default password. There used to be a working one here — "ChangeMe123!" —
+    # which was also pre-filled in .env.example, so copying the example file and
+    # starting up produced a reachable admin account with a published password.
+    # The only consequence was a log warning, on a first boot that emits plenty of
+    # other output. app/seed.py now refuses to bootstrap without a real value.
+    #
+    # Validated there rather than here on purpose: an existing deployment
+    # bootstrapped months ago and has no ADMIN_PASSWORD set anymore. Failing at
+    # config time would stop it from starting over a value it no longer uses.
     ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
     ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@example.com")
     ADMIN_NAME = os.environ.get("ADMIN_NAME", "Administrator")
-    ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ChangeMe123!")
+    ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
     # SMTP (optional — leave SMTP_HOST blank to disable)
     SMTP_HOST = os.environ.get("SMTP_HOST", "")

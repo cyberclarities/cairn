@@ -6,10 +6,10 @@ from flask_login import login_required, current_user
 
 from app.common import (
     ALL_TIMEZONES, build_timeline_display, choice, format_datetime_in_zone,
-    log_change as _log_change, log_event, next_case_id, parse_affected_systems,
+    log_change as _log_change, next_case_id, parse_affected_systems,
     parse_datetime, parse_int,
 )
-from app.decorators import analyst_required, admin_required
+from app.decorators import analyst_required
 from app.models import db, Case, User, CaseStatusHistory, LookupValue, TIMELINE_COLORS
 from app.seed import MITRE_DATA
 from app.services import report_builder
@@ -321,20 +321,17 @@ def edit_case(case_id_int):
     return render_template("cases/form.html", case=case, **opts)
 
 
-@cases_bp.route("/<int:case_id_int>/delete", methods=["POST"])
-@login_required
-@admin_required
-def delete_case(case_id_int):
-    case = db.get_or_404(Case, case_id_int)
-    label = case.case_id
-    # The case's own audit rows cascade away with it, so record the deletion
-    # as an unattached entry that survives.
-    log_event("case", case.id, "case_deleted",
-              detail=f"{label}: {case.title}", case_id=None)
-    db.session.delete(case)
-    db.session.commit()
-    flash(f"Case {label} deleted.", "warning")
-    return redirect(url_for("cases.list_cases"))
+# Case deletion lives in settings.delete_case, not here.
+#
+# There used to be a second delete route on this blueprint, reached from the
+# Danger Zone button on the case edit form. It shared nothing with the settings
+# one but the outcome: no typed case-ID confirmation, no pre-delete pg_dump
+# snapshot, no unlinking of promoted alerts (which were left claiming
+# status="promoted" against a null case_id), and a thinner audit entry. The
+# settings route's docstring said its confirmation could not be skipped by a
+# hand-crafted POST — true of that route, and a POST to this one skipped all of
+# it. Two routes doing the same destructive thing is how they drift, and these
+# had. The Danger Zone button now posts to settings.delete_case.
 
 
 # MITRE cascade API

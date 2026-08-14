@@ -114,9 +114,18 @@
             </p>
             <div class="alert alert-danger py-2 small mb-3">
               <i class="bi bi-exclamation-octagon-fill"></i>
-              <strong>Destructive:</strong> this overwrites all tables with the content of
-              the uploaded dump. There is no automatic pre-restore backup — download a fresh
-              backup first if you need a safety copy.
+              <strong>Destructive:</strong> this drops the schema and replaces every table
+              with the content of the uploaded dump. A full pre-restore snapshot is taken
+              first and its location is written to the server log, so a failed restore is
+              recoverable — but the current data is gone the moment this completes.
+            </div>
+            <div class="alert alert-warning py-2 small mb-3">
+              <i class="bi bi-shield-exclamation"></i>
+              <strong>Only restore a dump you produced.</strong> CAIRN checks that the file
+              is a pg_dump of a CAIRN database at this schema version. Those are
+              compatibility checks — they cannot tell whether the SQL inside is safe, and
+              everything in the file runs with full database privilege. A dump handed to you
+              by someone else is code you are choosing to execute.
             </div>
             <form id="restore-form" method="POST" action="{{ url_for('settings.restore_db') }}" enctype="multipart/form-data">
               <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -138,7 +147,10 @@
             function confirmRestore() {
               var f = document.getElementById('dump_file');
               if (!f.value) { alert('Please select a dump file first.'); return; }
-              if (!confirm('This will OVERWRITE the live database with the uploaded dump.\n\nAre you sure?')) return;
+              if (!confirm(
+                    'This will OVERWRITE the live database with the uploaded dump.\n\n' +
+                    'Everything in that file runs with full database privilege. Restore it ' +
+                    'only if you know where it came from.\n\nContinue?')) return;
               document.getElementById('restore-btn').disabled = true;
               document.getElementById('restore-spinner').classList.remove('d-none');
               document.getElementById('restore-form').submit();
