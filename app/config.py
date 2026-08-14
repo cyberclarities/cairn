@@ -99,6 +99,19 @@ class Config:
     # this path isn't writable, but that fallback does not survive a restart.
     EVIDENCE_STORAGE_PATH = os.environ.get("EVIDENCE_STORAGE_PATH", "/app/data/evidence")
 
+    # Scheduled evidence integrity re-check.
+    #
+    # download_evidence re-hashes a file at the moment somebody asks for it, which
+    # is the right time to check and the wrong thing to rely on: downloads are
+    # admin-only, so on a team where analysts do the case work nothing triggers a
+    # verification for weeks. This runs the same check on a timer.
+    #
+    # Each run takes the least-recently-verified files first, capped at BATCH, so
+    # a large evidence store is worked through over successive runs rather than
+    # re-hashing everything at once. Set HOURS to 0 to disable.
+    EVIDENCE_VERIFY_HOURS = int(os.environ.get("EVIDENCE_VERIFY_HOURS", 24))
+    EVIDENCE_VERIFY_BATCH = int(os.environ.get("EVIDENCE_VERIFY_BATCH", 200))
+
     # Bootstrap admin (used once, on first start, to create the initial account).
     #
     # No default password. There used to be a working one here — "ChangeMe123!" —

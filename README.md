@@ -86,9 +86,22 @@ The sections:
 
 | Role | Can do |
 |---|---|
-| `viewer` | Read cases, IOCs, evidence, timeline, alerts, reports. |
+| `viewer` | Read cases, IOC records, evidence records, timeline, alerts, reports. |
 | `analyst` | Everything a viewer can, plus create/edit cases, IOCs, evidence, timeline events, and review/promote/dismiss alerts. |
-| `admin` | Everything an analyst can, plus manage users, lookup lists, and database backup/restore. |
+| `admin` | Everything an analyst can, plus download evidence files, manage users, lookup lists, and database backup/restore. |
+
+Evidence **records** — name, type, hashes, chain of custody, everything shown on
+the case page — are readable by any signed-in role. Downloading the stored
+**file** is admin-only, and that is deliberate: retrieving evidence is the point
+at which a copy of it leaves the system, so it is the narrowest permission in the
+application. An analyst can attach a file and can delete the record, but cannot
+pull the bytes back out.
+
+Every download re-hashes the file against its recorded SHA-256 and writes the
+result — verified or mismatched — to the chain of custody before any bytes are
+sent. Because that check only fires when somebody downloads, and downloads are
+rare by design, a scheduled job re-verifies stored files independently. See
+`EVIDENCE_VERIFY_HOURS` in `.env.example`.
 
 ## Database migrations
 

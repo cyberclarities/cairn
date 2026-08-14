@@ -46,13 +46,27 @@ def create_app():
             user = db.session.get(User, int(user_id))
         except (TypeError, ValueError):
             return None
-        # is_active is checked once, by login_user() at sign-in, and never again.
-        # Flask-Login's login_required tests only is_authenticated, which UserMixin
-        # hardcodes to True — so without this check an account deactivated mid-shift
-        # keeps every right it had until the session expires. That is up to
-        # SESSION_LIFETIME_MINUTES (default 480), and longer in practice because
-        # SESSION_REFRESH_EACH_REQUEST re-issues the cookie on every request.
-        # The deactivate button has to actually deactivate.
+        # Defence in depth, not a fix for a live hole — the earlier version of this
+        # comment claimed otherwise and was wrong.
+        #
+        # Deactivation already took effect without this check. Flask-Login 0.6.x's
+        # UserMixin.is_authenticated is `return self.is_active`, and User overrides
+        # is_active with a database column, so login_required's is_authenticated
+        # test already reloaded the row and refused a deactivated account on the
+        # very next request. Verified end to end against Postgres.
+        #
+        # It is kept because that behaviour is an implementation detail two layers
+        # deep and it has already moved once: before Flask-Login 0.6.0,
+        # is_authenticated returned True unconditionally, and a deactivated user
+        # would have kept a live session for up to SESSION_LIFETIME_MINUTES. Pin an
+        # older flask-login, or take a future version that decouples the two again,
+        # and the gap reopens silently. This states the requirement where it can be
+        # read, instead of inheriting it from a mixin.
+        #
+        # What this does NOT address: an admin resetting a user's password does not
+        # invalidate that user's existing sessions — verified, the old session keeps
+        # working. Closing that needs a session token on the user row that rotates
+        # on password change, which is a migration and is not done here.
         if user is None or not user.is_active:
             return None
         return user
@@ -123,10 +137,12 @@ def create_app():
     if app.config.get("OIDC_CLIENT_ID"):
         _init_oidc(app)
 
-    # Background scheduler — starts if any integration credentials are configured
-    if app.config.get("CS_CLIENT_ID") or app.config.get("PP_SERVICE_PRINCIPAL"):
-        from .scheduler import init_scheduler
-        init_scheduler(app)
+    # Background scheduler. Alert polling registers only when credentials exist,
+    # but evidence integrity verification runs regardless — so this is no longer
+    # gated on having an integration configured. init_scheduler() declines to
+    # start a scheduler with no jobs in it.
+    from .scheduler import init_scheduler
+    init_scheduler(app)
 
     return app
 

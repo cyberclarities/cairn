@@ -204,6 +204,17 @@ def download_evidence(case_id_int, ev_id):
     about what's being handed out right now. Every download re-hashes the
     file on disk, compares it to hash_sha256, and logs the result — verified
     or mismatched — to the audit trail before the bytes go anywhere.
+
+    admin_required, while the rest of this module is analyst_required, is
+    deliberate and not a copy-paste slip: retrieving evidence is the point at
+    which a copy leaves the system, so it is held to the narrowest permission in
+    the application. An analyst can attach a file and delete the record but
+    cannot pull the bytes back out. README.md documents this.
+
+    The cost of that restriction is that the integrity check above only runs when
+    an admin downloads — which, on a team where analysts do the case work, may be
+    never. scheduler._verify_evidence runs the same check on a timer so tamper
+    detection does not depend on who happens to click.
     """
     case = db.get_or_404(Case, case_id_int)
     ev = db.get_or_404(Evidence, ev_id)

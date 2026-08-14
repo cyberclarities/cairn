@@ -1,5 +1,8 @@
 """
-Background scheduler — polls CrowdStrike and Proofpoint every 15 minutes.
+Background scheduler — alert polling and evidence integrity verification.
+
+Polls CrowdStrike and Proofpoint every 15 minutes when credentials are set, and
+re-hashes stored evidence files on a slower timer regardless.
 
 APScheduler runs a single BackgroundScheduler thread inside the Gunicorn
 worker process.  Because CAIRN uses --workers 1 this is safe; with multiple
@@ -261,6 +264,119 @@ def _poll_proofpoint(app):
 
 
 # ---------------------------------------------------------------------------
+# Evidence integrity verification
+# ---------------------------------------------------------------------------
+
+def _verify_evidence(app):
+    """
+    Re-hash stored evidence files and record the result.
+
+    The download route already verifies a file at the moment somebody asks for
+    it — the right moment, and the wrong thing to depend on. Downloads are
+    admin-only by design, so on a team where analysts do the case work nobody
+    triggers a verification for weeks at a time, and a hash recorded at upload
+    and never re-checked is a fact about the past rather than a statement about
+    the file sitting on disk now.
+
+    Least-recently-verified first, never-verified ahead of everything, capped at
+    EVIDENCE_VERIFY_BATCH per run. A large evidence store is worked through over
+    successive runs instead of re-hashing itself into a stall.
+
+    A mismatch or a missing file is written to the audit log and appended to the
+    evidence record's own chain of custody, same as the download path does, and
+    logged at ERROR so it surfaces wherever container logs are being watched.
+    Nothing is deleted or quarantined — this reports, it does not act.
+    """
+    from .models import AuditLog, Evidence, db, utcnow
+    from .services import evidence_storage
+
+    batch = app.config.get("EVIDENCE_VERIFY_BATCH", 200)
+
+    with app.app_context():
+        items = (
+            Evidence.query
+            .filter(Evidence.file_path.isnot(None))
+            .order_by(Evidence.hash_verified_at.asc().nulls_first())
+            .limit(batch)
+            .all()
+        )
+        if not items:
+            log.debug("Evidence verification: nothing with a stored file")
+            return
+
+        now = utcnow()
+        stamp = now.strftime("%Y-%m-%d %H:%M UTC")
+        checked = mismatched = missing = 0
+
+        def _append_custody(ev, text):
+            note = f"[{stamp}] scheduled integrity check: {text}"
+            ev.chain_of_custody = (
+                (ev.chain_of_custody + "\n") if ev.chain_of_custody else ""
+            ) + note
+
+        for ev in items:
+            try:
+                matches, computed = evidence_storage.verify_file(
+                    ev.file_path, ev.hash_sha256
+                )
+            except OSError:
+                # A single unreadable file must not stop the batch.
+                log.exception(
+                    "Evidence verification: could not read %s", ev.evidence_id
+                )
+                continue
+
+            ev.hash_verified_at = now
+            ev.hash_verified_ok = matches
+            checked += 1
+
+            if computed is None:
+                missing += 1
+                _append_custody(ev, "FILE MISSING from storage")
+                db.session.add(AuditLog(
+                    case_id=ev.case_id, entity_type="evidence", entity_id=ev.id,
+                    field_name="scheduled_verify_missing",
+                    new_value="file missing from storage",
+                    changed_by_id=None,   # nobody did this; the scheduler found it
+                ))
+                log.error(
+                    "Evidence %s (case %s): file missing from storage",
+                    ev.evidence_id, ev.case_id,
+                )
+            elif not matches:
+                mismatched += 1
+                _append_custody(
+                    ev,
+                    f"HASH MISMATCH — recorded {ev.hash_sha256}, computed {computed}",
+                )
+                db.session.add(AuditLog(
+                    case_id=ev.case_id, entity_type="evidence", entity_id=ev.id,
+                    field_name="scheduled_verify_mismatch",
+                    old_value=ev.hash_sha256, new_value=computed,
+                    changed_by_id=None,
+                ))
+                log.error(
+                    "Evidence %s (case %s): HASH MISMATCH recorded=%s computed=%s",
+                    ev.evidence_id, ev.case_id, ev.hash_sha256, computed,
+                )
+
+        try:
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            log.exception("Evidence verification: could not record results")
+            return
+
+        if mismatched or missing:
+            log.error(
+                "Evidence verification: %d checked, %d MISMATCHED, %d MISSING",
+                checked, mismatched, missing,
+            )
+        else:
+            log.info("Evidence verification: %d checked, all intact", checked)
+
+
+# ---------------------------------------------------------------------------
 # Init
 # ---------------------------------------------------------------------------
 
@@ -296,6 +412,35 @@ def init_scheduler(app):
             coalesce=True,
         )
         log.info("Scheduler: Proofpoint TAP poll registered (every 15 min)")
+
+    # Not gated on integration credentials — evidence integrity has nothing to do
+    # with whether CrowdStrike or Proofpoint is wired up.
+    verify_hours = app.config.get("EVIDENCE_VERIFY_HOURS", 24)
+    if verify_hours > 0:
+        scheduler.add_job(
+            func=lambda: _verify_evidence(app),
+            trigger=IntervalTrigger(hours=verify_hours),
+            id="evidence_verify",
+            name="Evidence Integrity Verification",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            max_instances=1,
+            coalesce=True,
+        )
+        log.info(
+            "Scheduler: evidence integrity verification registered (every %dh)",
+            verify_hours,
+        )
+    else:
+        log.warning(
+            "Scheduler: evidence integrity verification is DISABLED "
+            "(EVIDENCE_VERIFY_HOURS=0). Stored evidence will only be re-hashed "
+            "when an admin downloads it."
+        )
+
+    if not scheduler.get_jobs():
+        log.info("Scheduler: no jobs registered, not starting")
+        return
 
     if not scheduler.running:
         scheduler.start()
