@@ -4,6 +4,20 @@ Settings blueprint — lookup list management and database backup/restore.
 Database backup uses pg_dump to produce a compressed .sql.gz file.
 Restore accepts a .sql or .sql.gz file and pipes it through psql.
 
+Restore trust model — read this before changing the checks in restore_db().
+The validation there confirms an upload is *compatible* with this deployment:
+that it is a pg_dump, that it carries CAIRN's tables, that it holds data, and
+that its Alembic revision matches. None of it constrains what SQL the file may
+contain, and none of it can. A legitimate CAIRN backup passes every check by
+construction, and anything appended to one passes with it, then runs as the
+database role in DATABASE_URL. Where that role is the Postgres superuser — which
+it is under the default docker-compose.yml — that includes COPY ... FROM PROGRAM,
+which is command execution on the database host.
+
+So: an uploaded dump is trusted input executed with full database privilege. The
+control is the admin deciding the file's provenance, not this module. Do not let
+the wording of these checks suggest otherwise to the person doing the restore.
+
 Both pg_dump and psql must be available in the container (postgresql-client
 Alpine package).  The DATABASE_URL env var is parsed at runtime so this
 works with any PostgreSQL host, including external managed databases.
@@ -409,6 +423,9 @@ def restore_db():
     caught here — an admin running a restore needs to see what happened, not
     a blank "Internal Server Error" with the real reason sitting in a
     container log they may not have access to.
+
+    The checks below are compatibility checks, not a trust boundary. See the
+    module docstring: whatever survives them is executed as the database role.
     """
     db_url = current_app.config["SQLALCHEMY_DATABASE_URI"]
     if not db_url.startswith("postgresql"):
@@ -435,10 +452,15 @@ def restore_db():
             flash(f"Could not decompress file: {exc}", "danger")
             return redirect(url_for("settings.index") + "#database")
 
-    # ── Validate before anything destructive happens ─────────────────────────
+    # ── Compatibility checks, before anything destructive happens ─────────────
     # The preamble below drops the public schema. Every check that can be made
     # against the uploaded file has to happen first — once DROP SCHEMA runs, a
     # bad dump means an empty database and no way back.
+    #
+    # What these checks establish: the file is a pg_dump, it is a dump of a CAIRN
+    # database, it has data in it, and its schema version matches this build.
+    # What they do not establish: that the SQL inside it is safe to execute. They
+    # cannot. See the module docstring before adding a check that implies they do.
     text_head = raw[:8192].decode("utf-8", errors="ignore")
     if not text_head.lstrip().startswith("--"):
         flash("File does not appear to be a valid pg_dump SQL file.", "danger")
@@ -668,11 +690,16 @@ def _perform_restore(raw: bytes, filename: str, db_url: str):
         except Exception:
             pass
         db.engine.dispose()
+        # The snapshot path goes to the log, not the page. An admin screen gets
+        # shoulder-surfed and screenshotted into tickets; the container's internal
+        # filesystem layout does not need to travel that way to be useful.
+        log.error("restore_db: pre-restore snapshot for recovery is at %s", snapshot_path)
         flash(
             f"Restore failed: {err[:600]}\n\n"
-            f"The database may be in a partial state. A snapshot taken immediately "
-            f"before this restore is on the server at {snapshot_path} — restore it "
-            f"with psql to return to the previous state.",
+            f"The database may be in a partial state. A snapshot was taken "
+            f"immediately before this restore and can be replayed with psql to "
+            f"return to the previous state — its path is in the server log "
+            f"(docker compose logs web).",
             "danger",
         )
         return redirect(url_for("settings.index") + "#database")

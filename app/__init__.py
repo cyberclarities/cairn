@@ -3,6 +3,7 @@ import os
 
 from flask import Flask, jsonify
 from flask_login import LoginManager
+from werkzeug.middleware.proxy_fix import ProxyFix
 from flask_migrate import Migrate
 from flask_wtf.csrf import CSRFProtect
 
@@ -16,6 +17,17 @@ migrate = Migrate()
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
+
+    # Caddy terminates TLS and forwards to this app over plain HTTP inside
+    # cairn_net. Without ProxyFix, Flask never reads X-Forwarded-Proto, so
+    # request.scheme is "http" and url_for(..., _external=True) builds the OIDC
+    # redirect_uri as http://host/auth/oidc/callback. Azure AD rejects that as a
+    # redirect-URI mismatch — or, worse, an operator registers the http:// form to
+    # make the error go away and the authorization code comes back over plaintext.
+    # Counts are explicit: exactly one proxy in front, nothing beyond it trusted.
+    # This is also what makes request.remote_addr the real client IP for the auth
+    # audit trail (see auth._client_ip).
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=0)
 
     # Extensions
     db.init_app(app)
@@ -31,9 +43,19 @@ def create_app():
     @login_manager.user_loader
     def load_user(user_id):
         try:
-            return db.session.get(User, int(user_id))
+            user = db.session.get(User, int(user_id))
         except (TypeError, ValueError):
             return None
+        # is_active is checked once, by login_user() at sign-in, and never again.
+        # Flask-Login's login_required tests only is_authenticated, which UserMixin
+        # hardcodes to True — so without this check an account deactivated mid-shift
+        # keeps every right it had until the session expires. That is up to
+        # SESSION_LIFETIME_MINUTES (default 480), and longer in practice because
+        # SESSION_REFRESH_EACH_REQUEST re-issues the cookie on every request.
+        # The deactivate button has to actually deactivate.
+        if user is None or not user.is_active:
+            return None
+        return user
 
     # Blueprints
     from .routes.auth import auth_bp
@@ -146,9 +168,19 @@ def _register_security_headers(app):
     the response regardless of what sits in front of it — including a direct
     connection to the container during troubleshooting.
     """
-    # Bootstrap and its icon font are loaded from jsdelivr. Both are pinned with
-    # Subresource Integrity in base.html, so the CDN is allowed but cannot serve
-    # altered content without the browser rejecting it.
+    # Bootstrap and its icon font are loaded from jsdelivr.
+    #
+    # They are NOT pinned with Subresource Integrity. An earlier version of this
+    # comment said they were; they never have been — see the TODO in base.html.
+    # Until they are vendored into app/static/vendor/, allowing cdn.jsdelivr.net
+    # here means trusting the CDN to serve today what it served yesterday.
+    #
+    # 'unsafe-inline' on script-src is required by the theme script in base.html
+    # and the inline handlers in cases/detail.html, which means this policy is not
+    # a meaningful barrier to injected script either.
+    #
+    # Both are tracked and neither is fixed. Read this policy as the baseline it
+    # is, not as a control it is not.
     csp = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "

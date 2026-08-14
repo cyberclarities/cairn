@@ -73,10 +73,19 @@ def _audit_auth(action: str, user_id=None, detail: str = None):
 
 
 def _client_ip() -> str:
-    """Best-effort client IP. Caddy sets X-Forwarded-For."""
-    fwd = request.headers.get("X-Forwarded-For", "")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    """
+    Client IP, as rewritten by ProxyFix (see create_app).
+
+    This used to parse X-Forwarded-For by hand, which trusted a client-supplied
+    header in one place while ignoring proxy headers everywhere else. ProxyFix now
+    does it centrally, with an explicit hop count.
+
+    The assumption underneath is worth stating plainly, because every IP in the
+    authentication audit trail rests on it: Caddy *overwrites* X-Forwarded-For
+    rather than appending to whatever the client sent. Put CAIRN behind a proxy
+    that does not, or expose it directly, and these IPs become attacker-controlled
+    strings in a security log. Re-check this if the deployment shape changes.
+    """
     return request.remote_addr or "unknown"
 
 

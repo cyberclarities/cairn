@@ -63,6 +63,10 @@ class Config:
     )
     SESSION_REFRESH_EACH_REQUEST = True
 
+    # URLs built outside a request context have no X-Forwarded-Proto to read.
+    # Inside a request, ProxyFix (see app/__init__.py) supplies the real scheme.
+    PREFERRED_URL_SCHEME = os.environ.get("PREFERRED_URL_SCHEME", "https")
+
     # Reject oversized uploads outright (restore accepts .sql/.sql.gz dumps).
     MAX_CONTENT_LENGTH = int(os.environ.get("MAX_UPLOAD_MB", 512)) * 1024 * 1024
     # Connection pool settings (PostgreSQL)
