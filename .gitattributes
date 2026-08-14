@@ -1,0 +1,6 @@
+# Vendored font binaries. Git's auto-detection already treats these as binary,
+# but say it explicitly — this working tree has CRLF files against an LF repo,
+# and a line-ending pass over a woff file produces a font that silently will not
+# render.
+app/static/vendor/fonts/*.woff   binary
+app/static/vendor/fonts/*.woff2  binary

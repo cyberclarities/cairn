@@ -168,24 +168,22 @@ def _register_security_headers(app):
     the response regardless of what sits in front of it — including a direct
     connection to the container during troubleshooting.
     """
-    # Bootstrap and its icon font are loaded from jsdelivr.
+    # No third-party origins. Bootstrap and bootstrap-icons are vendored under
+    # app/static/vendor/, so cdn.jsdelivr.net is gone from every directive — the
+    # console no longer depends on a CDN at runtime, and there is nothing left for
+    # Subresource Integrity to protect.
     #
-    # They are NOT pinned with Subresource Integrity. An earlier version of this
-    # comment said they were; they never have been — see the TODO in base.html.
-    # Until they are vendored into app/static/vendor/, allowing cdn.jsdelivr.net
-    # here means trusting the CDN to serve today what it served yesterday.
-    #
-    # 'unsafe-inline' on script-src is required by the theme script in base.html
-    # and the inline handlers in cases/detail.html, which means this policy is not
-    # a meaningful barrier to injected script either.
-    #
-    # Both are tracked and neither is fixed. Read this policy as the baseline it
-    # is, not as a control it is not.
+    # What this policy still does NOT do, stated plainly so nobody reads more into
+    # it than it earns: 'unsafe-inline' remains on script-src and style-src,
+    # because base.html carries an inline theme script and cases/detail.html uses
+    # inline onclick handlers. Injected script would still execute. Removing that
+    # means moving every inline handler out to a vendored file or adopting nonces,
+    # and it has not been done.
     csp = (
         "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-        "font-src 'self' https://cdn.jsdelivr.net data:; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "font-src 'self' data:; "
         "img-src 'self' data:; "
         "connect-src 'self'; "
         "form-action 'self'; "
