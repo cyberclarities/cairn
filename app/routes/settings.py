@@ -42,7 +42,7 @@ from flask_login import login_required, current_user
 
 from ..common import log_event, parse_int
 from ..decorators import admin_required
-from ..models import db, LookupValue, AuditLog, Case, Alert, utcnow, TIMELINE_COLORS
+from ..models import db, LookupValue, AuditLog, Case, Alert, User, utcnow, TIMELINE_COLORS
 
 log = logging.getLogger(__name__)
 
@@ -153,6 +153,55 @@ def _current_alembic_head() -> str | None:
     except Exception:
         log.warning("Could not determine current Alembic head", exc_info=True)
         return None
+
+
+def _revision_relationship(dump_revision: str | None) -> str:
+    """
+    Where an uploaded dump's schema revision sits relative to this deployment.
+
+    The guard used to be strict equality — any revision other than head was
+    refused. That is stricter than the facts warrant. A dump from an *older*
+    revision is exactly what Alembic migrations exist to bring forward, and
+    refusing it means a backup taken the day before an upgrade is unusable
+    through the console for no reason. A dump from a *newer* revision is a
+    different matter: this code has never seen those columns and cannot reason
+    about them.
+
+    Returns:
+      "none"      no alembic_version in the dump — predates migrations entirely
+      "same"      already at this deployment's head; restore as-is
+      "ancestor"  older, and on the path to head — restore, then migrate forward
+      "unknown"   a revision this code has never heard of; almost always a backup
+                  from a NEWER CAIRN than this one
+      "divergent" known, but not on the path to head — a branch not taken here
+    """
+    if dump_revision is None:
+        return "none"
+
+    head = _current_alembic_head()
+    if head is None:
+        return "unknown"
+    if dump_revision == head:
+        return "same"
+
+    try:
+        from alembic.script import ScriptDirectory
+        migrations_dir = os.path.join(current_app.root_path, "..", "migrations")
+        script = ScriptDirectory(migrations_dir)
+
+        if dump_revision not in {r.revision for r in script.walk_revisions()}:
+            return "unknown"
+        lineage = {r.revision for r in script.iterate_revisions(head, "base")}
+        return "ancestor" if dump_revision in lineage else "divergent"
+    except Exception:
+        # Anything unexpected here is treated as unknown, which refuses. Failing
+        # closed is the right direction for a check standing in front of
+        # DROP SCHEMA.
+        log.warning(
+            "Could not place dump revision %s relative to head", dump_revision,
+            exc_info=True,
+        )
+        return "unknown"
 
 
 def _dump_schema_revision(raw: bytes) -> str | None:
@@ -588,8 +637,22 @@ def restore_db():
     # just a validation error and not a broken deployment.
     current_head = _current_alembic_head()
     dump_revision = _dump_schema_revision(raw)
-    if current_head is not None and dump_revision != current_head:
-        if dump_revision is None:
+    relationship = _revision_relationship(dump_revision)
+    upgrade_after_restore = False
+
+    if current_head is not None and relationship != "same":
+        if relationship == "ancestor":
+            # A backup from before an upgrade. Restore it, then run the same
+            # migrations a live database would have run — which is what they are
+            # for. Refusing this was the single most common way to be left
+            # holding an unusable backup: take one, upgrade the images the next
+            # day, and the backup becomes unrestorable through the console.
+            upgrade_after_restore = True
+            log.info(
+                "restore_db: dump is at %s and head is %s — will migrate forward "
+                "after the restore", dump_revision, current_head,
+            )
+        elif relationship == "none":
             flash(
                 "This backup predates CAIRN's database migrations (it has no "
                 "schema version recorded) and cannot be restored into this "
@@ -598,16 +661,30 @@ def restore_db():
                 "export what you need from there, and re-enter it here.",
                 "danger",
             )
-        else:
+            return redirect(url_for("settings.index") + "#database")
+        elif relationship == "unknown":
             flash(
-                f"This backup is from a different CAIRN schema version "
-                f"(backup: {dump_revision}, this deployment: {current_head}) "
-                f"and cannot be restored — doing so would leave the database "
-                f"out of sync with this version of CAIRN. The database was "
-                f"left untouched.",
+                f"This backup is from a NEWER version of CAIRN than this "
+                f"deployment. Its schema revision ({dump_revision}) is one this "
+                f"code has never seen; this deployment is at {current_head}. "
+                f"Restoring it would load tables this version does not know how "
+                f"to read, and there is no migration that walks backwards. "
+                f"Upgrade CAIRN to at least the version that produced this "
+                f"backup, then restore. The database was left untouched.",
                 "danger",
             )
-        return redirect(url_for("settings.index") + "#database")
+            return redirect(url_for("settings.index") + "#database")
+        else:  # divergent
+            flash(
+                f"This backup's schema revision ({dump_revision}) is known to "
+                f"this deployment but is not on the path to its current schema "
+                f"({current_head}) — the two come from different migration "
+                f"branches. CAIRN will not guess how to reconcile them. The "
+                f"database was left untouched. Restore it into a deployment on "
+                f"that branch and export what you need.",
+                "danger",
+            )
+            return redirect(url_for("settings.index") + "#database")
 
     # Strip SET statements for parameters introduced in newer PostgreSQL versions
     # (e.g. transaction_timeout added in PG17 — unknown to PG16 and earlier).
@@ -629,7 +706,8 @@ def restore_db():
     raw = filtered.getvalue()
 
     try:
-        return _perform_restore(raw, uploaded.filename, db_url)
+        return _perform_restore(raw, uploaded.filename, db_url,
+                                upgrade_after_restore=upgrade_after_restore)
     except Exception as exc:
         # Last resort. Everything above this point fails with a specific,
         # readable flash message. Anything that reaches here is something we
@@ -649,14 +727,32 @@ def restore_db():
         return redirect(url_for("settings.index") + "#database")
 
 
-def _perform_restore(raw: bytes, filename: str, db_url: str):
+def _perform_restore(raw: bytes, filename: str, db_url: str,
+                     upgrade_after_restore: bool = False):
     """
-    The destructive part of a restore: snapshot, drop-and-reload, verify.
+    The destructive part of a restore: snapshot, drop-and-reload, migrate, verify.
+
+    upgrade_after_restore is set when the dump came from an older schema revision
+    on the path to this deployment's head. The data lands at the old schema and
+    then the ordinary migrations run, exactly as they would on a live database
+    being upgraded.
 
     Split out from restore_db() so the whole sequence can be wrapped in one
     try/except at the call site — this function is allowed to raise, and the
     caller is responsible for turning that into something an admin can read.
     """
+    # Read the acting admin's id first, while the users table is still this
+    # deployment's own.
+    #
+    # A restore replaces users along with everything else. If the uploaded backup
+    # does not contain the account performing the restore — an admin created after
+    # that backup was taken, which is entirely ordinary — then after the reload
+    # current_user refers to a row that no longer exists, and the first attribute
+    # access raises "Instance <User> has been deleted, or its row is otherwise not
+    # present". That surfaced as a failure flash on an otherwise completely
+    # successful restore.
+    admin_id = current_user.id
+
     params = _parse_db_url(db_url)
 
     cmd = [
@@ -791,12 +887,42 @@ def _perform_restore(raw: bytes, filename: str, db_url: str):
         )
         return redirect(url_for("settings.index") + "#database")
 
+    log.info("restore_db: psql restore completed successfully")
+
+    if upgrade_after_restore:
+        # The data is in at the backup's schema. Bring it to head before anything
+        # in this process reads it — this code expects head, and a half-migrated
+        # database is exactly the state the old strict guard existed to prevent.
+        log.info("restore_db: migrating the restored database forward to head")
+        try:
+            from flask_migrate import upgrade as _alembic_upgrade
+            _alembic_upgrade()
+            log.info("restore_db: post-restore migration completed")
+        except Exception as exc:
+            # The worst outcome available: data restored, schema stale, and this
+            # code cannot read it. Say so plainly and point at the snapshot.
+            log.exception("restore_db: post-restore migration FAILED")
+            log.error(
+                "restore_db: pre-restore snapshot for recovery is at %s", snapshot_path
+            )
+            flash(
+                f"The backup restored, but bringing its schema up to date "
+                f"afterwards failed: {str(exc)[:400]}\n\n"
+                f"The database now holds the backup's data at the backup's older "
+                f"schema, which this version of CAIRN cannot read correctly. Do "
+                f"not use the console until this is resolved. A snapshot was "
+                f"taken immediately before the restore and can be replayed with "
+                f"psql — its path is in the server log (docker compose logs web).",
+                "danger",
+            )
+            return redirect(url_for("settings.index") + "#database")
+
     log.info("restore_db: completed successfully")
 
-    # Capture what's needed from the logged-in admin's user object BEFORE the
-    # session teardown below detaches it. current_user is a live, attached
-    # object right up until this point.
-    admin_id = current_user.id
+    # admin_id was captured at the top of this function, before the restore. It
+    # cannot be read from current_user here: the restore replaced the users table
+    # with the backup's, so if this admin account did not exist in that backup the
+    # object is gone and touching it raises ObjectDeletedError.
 
     # pg_terminate_backend() killed the connection this session holds.
     # Invalidate it first so SQLAlchemy won't try to rollback on a dead socket,
@@ -828,6 +954,22 @@ def _perform_restore(raw: bytes, filename: str, db_url: str):
     # log_event() would trigger the same reload current_user just needed,
     # and there's no reason to depend on template/context-processor ordering
     # to have already forced it.
+    # The restored database has the backup's users, not this deployment's. If the
+    # admin who ran the restore was created after that backup was taken, their id
+    # no longer resolves and a foreign key on changed_by_id would fail — silently
+    # costing the audit entry for the single most destructive action in the
+    # application. An unattributed record of a restore beats no record of it.
+    attributed_to = admin_id
+    try:
+        if db.session.get(User, admin_id) is None:
+            attributed_to = None
+            log.warning(
+                "restore_db: admin id %s is not present in the restored database; "
+                "recording the restore without attribution", admin_id,
+            )
+    except Exception:
+        attributed_to = None
+
     try:
         db.session.add(AuditLog(
             case_id=None,
@@ -835,8 +977,12 @@ def _perform_restore(raw: bytes, filename: str, db_url: str):
             entity_id=None,
             field_name="restore_completed",
             old_value=None,
-            new_value=f"upload={filename} snapshot={snapshot_path}",
-            changed_by_id=admin_id,
+            new_value=(
+                f"upload={filename} snapshot={snapshot_path}"
+                + (" migrated_forward=yes" if upgrade_after_restore else "")
+                + ("" if attributed_to else " (acting admin absent from the backup)")
+            ),
+            changed_by_id=attributed_to,
         ))
         db.session.commit()
     except Exception:
