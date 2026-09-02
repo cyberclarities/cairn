@@ -36,6 +36,12 @@ logs/
 # not in a repo that may become public.
 CODE_REVIEW.md
 
+# Git bundles are transfer artefacts — a way to move commits between machines
+# when a push is not available. Once the commits are on the remote the bundle is
+# a stale duplicate of history, and it has no business being tracked by the
+# repository it came from.
+*.bundle
+
 # ─── Editor / OS ──────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
