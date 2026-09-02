@@ -4,7 +4,9 @@
 
 {% block content %}
 <ul class="nav nav-tabs mb-0" id="settingsTabs" role="tablist">
-  {% for tid, tlabel in [("case_type","Case Types"),("ioc_type","IOC Types"),("evidence_type","Evidence Types"),("timeline_category","Timeline Categories"),("timeline_color","Timeline Colors"),("database","Database")] %}
+  {# Tab list comes from settings.MANAGED_LOOKUP_LISTS. Do not hardcode names here
+     again — that duplication is why the asset lists were invisible. #}
+  {% for tid, tlabel in tab_list %}
   <li class="nav-item">
     <button class="nav-link {% if loop.first %}active{% endif %}" id="{{ tid }}-tab"
             data-bs-toggle="tab" data-bs-target="#{{ tid }}" type="button">{{ tlabel }}</button>
@@ -14,7 +16,7 @@
 
 <div class="tab-content border border-top-0 rounded-bottom bg-white p-3" id="settingsContent">
 
-  {% for list_name in ["case_type","ioc_type","evidence_type","timeline_category"] %}
+  {% for list_name, _label in managed_lists %}
   <div class="tab-pane fade {% if loop.first %}show active{% endif %}" id="{{ list_name }}">
     <div class="row justify-content-center">
       <div class="col-md-6">

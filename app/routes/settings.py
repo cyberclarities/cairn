@@ -228,18 +228,48 @@ def _alert_purge_query(status: str, source: str, days: int):
 # Lookup list management
 # ---------------------------------------------------------------------------
 
+# Lookup lists the admin screen manages, in tab order.
+#
+# One source of truth, deliberately. These names used to be written out three
+# times — once in the loader below and twice more in admin/settings.html, for the
+# tab buttons and the tab panes — so adding a list meant editing three places and
+# forgetting any one of them produced a list that existed in the database with
+# nowhere to edit it.
+#
+# That is exactly what happened to asset_type, asset_criticality and asset_role:
+# seeded by cc385e2, populated correctly, and invisible in Settings because this
+# screen never asked for them. Add a new list here and it appears; there is no
+# second place to remember.
+MANAGED_LOOKUP_LISTS = (
+    ("case_type", "Case Types"),
+    ("ioc_type", "IOC Types"),
+    ("evidence_type", "Evidence Types"),
+    ("asset_type", "Asset Types"),
+    ("asset_criticality", "Asset Criticality"),
+    ("asset_role", "Asset Roles"),
+    ("timeline_category", "Timeline Categories"),
+)
+
+# Tabs that are not plain lookup lists and render their own way.
+_EXTRA_SETTINGS_TABS = (
+    ("timeline_color", "Timeline Colors"),
+    ("database", "Database"),
+)
+
+
 @settings_bp.route("/")
 @login_required
 @admin_required
 def index():
-    lists = {}
-    for list_name in ("case_type", "ioc_type", "evidence_type", "timeline_category"):
-        lists[list_name] = (
+    lists = {
+        list_name: (
             LookupValue.query
             .filter_by(list_name=list_name, is_active=True)
             .order_by(LookupValue.display_order)
             .all()
         )
+        for list_name, _label in MANAGED_LOOKUP_LISTS
+    }
     cases = Case.query.order_by(Case.case_id).all()
 
     # Fixed 7 slots — always all 7, active or not, in slot order. Zipped with
@@ -272,7 +302,9 @@ def index():
         }
 
     return render_template("admin/settings.html", lists=lists, cases=cases,
-                           purge_preview=purge_preview, timeline_colors=timeline_colors)
+                           purge_preview=purge_preview, timeline_colors=timeline_colors,
+                           managed_lists=MANAGED_LOOKUP_LISTS,
+                           tab_list=list(MANAGED_LOOKUP_LISTS) + list(_EXTRA_SETTINGS_TABS))
 
 
 @settings_bp.route("/lookup/add", methods=["POST"])
