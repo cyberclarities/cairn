@@ -109,9 +109,50 @@
 <h2>Incident Overview</h2>
 <p><strong>Method of Discovery:</strong> {{ data.method_of_discovery }}</p>
 <p><strong>Initial Vector:</strong> {{ data.initial_vector }}</p>
-<p><strong>Affected Systems:</strong> {{ data.affected_systems }}</p>
 <p><strong>Affected Users:</strong> {{ data.affected_users }}</p>
 <p><strong>Estimated Impact:</strong> {{ data.estimated_impact }}</p>
+
+<h2>Affected Assets</h2>
+{% if data.assets %}
+<p><strong>Scope:</strong> {{ data.asset_scope }}</p>
+<table>
+  <thead><tr><th>Asset</th><th>Type</th><th>Criticality</th><th>Role in this incident</th><th>Notes</th></tr></thead>
+  <tbody>
+  {% for s in data.assets %}
+    <tr><td>{{ s.name }}</td><td>{{ s.type }}</td><td>{{ s.criticality }}</td><td>{{ s.role }}</td><td>{{ s.notes }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No assets were linked to this case.</p>
+{% endif %}
+{% if data.affected_systems_text %}
+<p class="muted"><em>As originally recorded:</em> {{ data.affected_systems_text }}</p>
+{% endif %}
+
+<h2>Response Metrics</h2>
+<table>
+  <thead><tr><th>Interval</th><th>Elapsed</th></tr></thead>
+  <tbody>
+  {% for m in data.response_metrics %}
+    <tr><td>{{ m.label }}</td><td>{{ m.value }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Detection Provenance</h2>
+{% if data.alerts %}
+<table>
+  <thead><tr><th>Source</th><th>Alert ID</th><th>Severity</th><th>Host</th><th>Detected (UTC)</th><th>Ingested (UTC)</th><th>Promoted by</th></tr></thead>
+  <tbody>
+  {% for al in data.alerts %}
+    <tr><td>{{ al.source }}</td><td>{{ al.external_id }}</td><td>{{ al.severity }}</td><td>{{ al.host }}</td><td>{{ al.detected }}</td><td>{{ al.ingested }}</td><td>{{ al.promoted_by }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">This case was not raised from an ingested alert. See Method of Discovery above for how it came to attention.</p>
+{% endif %}
 
 <h2>Timeline of Events</h2>
 {% if data.timeline %}
@@ -156,6 +197,25 @@
 <p class="note">Full chain-of-custody detail is retained in Cairn per each evidence record.</p>
 {% else %}
 <p class="placeholder">No evidence recorded.</p>
+{% endif %}
+
+<h3>Evidence Integrity</h3>
+<p>{{ data.integrity.statement }}</p>
+
+<h2>Who Worked This Incident</h2>
+<p><strong>Lead analyst:</strong> {{ data.lead_analyst }}</p>
+{% if data.contributors %}
+<table>
+  <thead><tr><th>Contributor</th><th>Recorded actions</th><th>First (UTC)</th><th>Last (UTC)</th></tr></thead>
+  <tbody>
+  {% for c in data.contributors %}
+    <tr><td>{{ c.name }}</td><td>{{ c.actions }}</td><td>{{ c.first }}</td><td>{{ c.last }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p class="muted"><em>Derived from the audit log — actions recorded in CAIRN only. Work done outside the console is not represented here.</em></p>
+{% else %}
+<p class="muted">No attributed actions recorded against this case.</p>
 {% endif %}
 
 <h2>Root Cause</h2>

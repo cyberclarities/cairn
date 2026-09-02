@@ -112,6 +112,42 @@ def _or_placeholder(value, placeholder="Not yet documented."):
 _XML_UNSAFE_TABLE = str.maketrans({c: None for c in range(32) if c not in (9, 10)})
 
 
+def _integrity_statement(i: dict) -> str:
+    """
+    One sentence about evidence integrity that an examiner can rely on.
+
+    It must never claim more than the verification actually covered. A file that
+    has never been re-hashed is not a verified file, and a record with nothing
+    stored in CAIRN is not unverified — it is unverifiable by this system, which
+    is a different statement and the honest one to make.
+    """
+    if not i["records"]:
+        return "No evidence was recorded for this case."
+
+    noun = "record" if i["records"] == 1 else "records"
+    if not i["with_files"]:
+        return (
+            f"{i['records']} evidence {noun}, none with a file stored in CAIRN. "
+            f"Their integrity cannot be attested by this system."
+        )
+
+    parts = [f"{i['with_files']} of {i['records']} evidence {noun} have a file stored in CAIRN."]
+    if i["mismatched"]:
+        parts.append(
+            f"{i['mismatched']} FAILED hash verification and must be treated as "
+            f"altered since collection."
+        )
+    if i["verified"]:
+        parts.append(
+            f"{i['verified']} verified against the hash recorded at collection."
+        )
+    if i["unchecked"]:
+        parts.append(f"{i['unchecked']} have not been re-verified since collection.")
+    if i["last_checked"]:
+        parts.append(f"Most recent verification: {i['last_checked']} UTC.")
+    return " ".join(parts)
+
+
 def _clean(value):
     r"""Return *value* as a string safe to write into a Word document.
 
@@ -204,6 +240,117 @@ def build_report_data(case):
         "digest": e["sha256"] or e["md5"],
     } for e in evidence_rows if e["sha256"] or e["md5"]]
 
+    # ── Affected assets ──────────────────────────────────────────────────────
+    # Supersedes the affected_systems free-text line, which is still printed
+    # below it while both are live. A typed, deduplicated list answers what the
+    # text never could: what kind of estate was hit, and what each host was in
+    # this particular incident.
+    asset_rows = [{
+        "name": link.asset.name,
+        "type": link.asset.type_label,
+        "criticality": link.asset.criticality or "Not assessed",
+        "role": link.role or "Not determined",
+        "notes": _clean(link.notes) or "",
+    } for link in sorted(case.asset_links, key=lambda l: l.asset.name.lower())]
+
+    # Computed from the table above, never typed, so the two cannot disagree.
+    asset_scope = None
+    if asset_rows:
+        by_type = {}
+        for r in asset_rows:
+            by_type[r["type"]] = by_type.get(r["type"], 0) + 1
+        breakdown = ", ".join(
+            f"{t} ({n})"
+            for t, n in sorted(by_type.items(), key=lambda kv: (-kv[1], kv[0]))
+        )
+        n = len(asset_rows)
+        asset_scope = f"{n} asset{'s' if n != 1 else ''} — {breakdown}"
+        critical = sum(1 for r in asset_rows if r["criticality"] == "Critical")
+        if critical:
+            asset_scope += f"; {critical} rated Critical"
+        unclassified = by_type.get("Unclassified", 0)
+        if unclassified:
+            # Said out loud rather than left as a blank cell. An unclassified
+            # asset in a report going to leadership is an open question, not a
+            # formatting artefact.
+            asset_scope += (
+                f". {unclassified} not yet classified — the type is unknown, "
+                f"not absent"
+            )
+
+    # ── Response metrics ─────────────────────────────────────────────────────
+    # All four timestamps were already stored and only the total was printed.
+    # The intervals are what a reader actually asks for. Derived, not entered,
+    # so they cannot contradict the dates they come from.
+    response_metrics = [
+        {"label": label, "value": value or "Not yet reached"}
+        for label, value in (
+            ("Detection to containment", _duration_str(case.opened_date, case.contained_date)),
+            ("Containment to eradication", _duration_str(case.contained_date, case.eradicated_date)),
+            ("Eradication to closure", _duration_str(case.eradicated_date, case.closed_date)),
+            ("Total — opened to closed", _duration_str(case.opened_date, case.closed_date)),
+        )
+    ]
+
+    # ── Evidence integrity ───────────────────────────────────────────────────
+    # Listing hashes without saying whether they still match is the weaker half
+    # of the chain-of-custody design. This report leaves the building.
+    stored_evidence = [e for e in evidence_items if e.file_path]
+    last_checked = max(
+        (e.hash_verified_at for e in stored_evidence if e.hash_verified_at),
+        default=None,
+    )
+    integrity = {
+        "records": len(evidence_items),
+        "with_files": len(stored_evidence),
+        "verified": sum(1 for e in stored_evidence if e.hash_verified_ok is True),
+        "mismatched": sum(1 for e in stored_evidence if e.hash_verified_ok is False),
+        "unchecked": sum(1 for e in stored_evidence if e.hash_verified_ok is None),
+        "last_checked": _fmt_dt(last_checked),
+    }
+    integrity["statement"] = _integrity_statement(integrity)
+
+    # ── Detection provenance ─────────────────────────────────────────────────
+    # method_of_discovery is what an analyst wrote afterwards. This is what the
+    # tooling actually did. The two disagreeing is itself worth seeing.
+    alerts_sorted = sorted(
+        case.alerts,
+        key=lambda a: (a.cs_created_at or a.fetched_at or datetime.max),
+    )
+    alert_rows = [{
+        "source": (a.source or "").replace("_", " ").title() or "—",
+        "external_id": a.external_id or "—",
+        "severity": a.severity_name or "—",
+        "host": a.host_hostname or a.host_ip or "—",
+        "detected": _fmt_dt(a.cs_created_at) or "—",
+        "ingested": _fmt_dt(a.fetched_at) or "—",
+        "promoted_by": a.reviewed_by.name if a.reviewed_by else "—",
+    } for a in alerts_sorted]
+
+    # ── Contributors ─────────────────────────────────────────────────────────
+    # Everyone who touched the case, from the audit log. The lead analyst is
+    # named elsewhere; this is who actually did the work, which is not always
+    # the same person and is standard AAR content.
+    seen = {}
+    for entry in case.audit_entries:
+        if not entry.changed_by_id:
+            continue
+        name = entry.changed_by.name if entry.changed_by else f"user {entry.changed_by_id}"
+        row = seen.setdefault(name, {"name": name, "actions": 0, "first": None, "last": None})
+        row["actions"] += 1
+        when = entry.changed_at
+        if when:
+            if row["first"] is None or when < row["first"]:
+                row["first"] = when
+            if row["last"] is None or when > row["last"]:
+                row["last"] = when
+    contributor_rows = [{
+        "name": r["name"],
+        "actions": r["actions"],
+        "first": _fmt_dt(r["first"]) or "—",
+        "last": _fmt_dt(r["last"]) or "—",
+    } for r in sorted(seen.values(), key=lambda r: (r["first"] or datetime.max))]
+
     deviation_rows = [{
         "deviation": d.deviation,
         "standard_procedure": d.standard_procedure or "—",
@@ -269,12 +416,28 @@ def build_report_data(case):
         "method_of_discovery": _or_placeholder(case.method_of_discovery),
         "initial_vector": _or_placeholder(case.initial_vector),
         "affected_systems": _or_placeholder(case.affected_systems, "Not recorded."),
+        # The raw column, collapsed to a single line. Renderers show it only when
+        # it has content, under the structured asset table rather than instead of
+        # it. Newlines are joined rather than kept: this renders inline after a
+        # bold label in all three outputs, and a line break there breaks out of
+        # the label in Markdown and out of the paragraph in Word.
+        "affected_systems_text": "; ".join(
+            line.strip()
+            for line in (case.affected_systems or "").splitlines()
+            if line.strip()
+        ),
         "affected_users": _or_placeholder(case.affected_users, "Not recorded."),
         "estimated_impact": _or_placeholder(case.estimated_impact, "Not recorded."),
 
         "timeline": timeline,
 
         "iocs": ioc_rows,
+        "assets": asset_rows,
+        "asset_scope": asset_scope,
+        "response_metrics": response_metrics,
+        "integrity": integrity,
+        "alerts": alert_rows,
+        "contributors": contributor_rows,
         "evidence": evidence_rows,
         "evidence_hashes": evidence_hashes,
 
@@ -349,11 +512,52 @@ def render_markdown(data: dict) -> str:
     a("")
     a(f"**Initial Vector:** {data['initial_vector']}")
     a("")
-    a(f"**Affected Systems:** {data['affected_systems']}")
-    a("")
     a(f"**Affected Users:** {data['affected_users']}")
     a("")
     a(f"**Estimated Impact:** {data['estimated_impact']}")
+    a("")
+
+    a("## Affected Assets")
+    a("")
+    if data["assets"]:
+        a(f"**Scope:** {data['asset_scope']}")
+        a("")
+        a("| Asset | Type | Criticality | Role in this incident | Notes |")
+        a("|---|---|---|---|---|")
+        for s in data["assets"]:
+            a(f"| {_md_cell(s['name'])} | {_md_cell(s['type'])} | "
+              f"{_md_cell(s['criticality'])} | {_md_cell(s['role'])} | "
+              f"{_md_cell(s['notes'])} |")
+    else:
+        a("No assets were linked to this case.")
+    a("")
+    if data["affected_systems_text"]:
+        # Kept because it is what an analyst actually typed, and on older cases
+        # it may hold detail the structured list does not.
+        a(f"**As originally recorded:** {data['affected_systems_text']}")
+        a("")
+
+    a("## Response Metrics")
+    a("")
+    a("| Interval | Elapsed |")
+    a("|---|---|")
+    for m in data["response_metrics"]:
+        a(f"| {_md_cell(m['label'])} | {_md_cell(m['value'])} |")
+    a("")
+
+    a("## Detection Provenance")
+    a("")
+    if data["alerts"]:
+        a("| Source | Alert ID | Severity | Host | Detected (UTC) | Ingested (UTC) | Promoted by |")
+        a("|---|---|---|---|---|---|---|")
+        for al in data["alerts"]:
+            a(f"| {_md_cell(al['source'])} | {_md_cell(al['external_id'])} | "
+              f"{_md_cell(al['severity'])} | {_md_cell(al['host'])} | "
+              f"{_md_cell(al['detected'])} | {_md_cell(al['ingested'])} | "
+              f"{_md_cell(al['promoted_by'])} |")
+    else:
+        a("This case was not raised from an ingested alert. See Method of "
+          "Discovery above for how it came to attention.")
     a("")
 
     a("## Timeline of Events")
@@ -398,6 +602,28 @@ def render_markdown(data: dict) -> str:
         a("*Full chain-of-custody detail is retained in Cairn per each evidence record.*")
     else:
         a("No evidence recorded.")
+    a("")
+
+    a("### Evidence Integrity")
+    a("")
+    a(data["integrity"]["statement"])
+    a("")
+
+    a("## Who Worked This Incident")
+    a("")
+    a(f"**Lead analyst:** {data['lead_analyst']}")
+    a("")
+    if data["contributors"]:
+        a("| Contributor | Recorded actions | First (UTC) | Last (UTC) |")
+        a("|---|---|---|---|")
+        for cr in data["contributors"]:
+            a(f"| {_md_cell(cr['name'])} | {cr['actions']} | "
+              f"{_md_cell(cr['first'])} | {_md_cell(cr['last'])} |")
+        a("")
+        a("Derived from the audit log — actions recorded in CAIRN only. Work done "
+          "outside the console is not represented here.")
+    else:
+        a("No attributed actions recorded against this case.")
     a("")
 
     a("## Root Cause")
@@ -646,9 +872,47 @@ def render_docx(data: dict) -> io.BytesIO:
     add_heading("Incident Overview")
     add_para(f"Method of Discovery: {data['method_of_discovery']}")
     add_para(f"Initial Vector: {data['initial_vector']}")
-    add_para(f"Affected Systems: {data['affected_systems']}")
     add_para(f"Affected Users: {data['affected_users']}")
     add_para(f"Estimated Impact: {data['estimated_impact']}")
+
+    add_heading("Affected Assets")
+    if data["assets"]:
+        add_para(data["asset_scope"], bold=True)
+        add_table(
+            ["Asset", "Type", "Criticality", "Role in this incident", "Notes"],
+            [[s["name"], s["type"], s["criticality"], s["role"], s["notes"]]
+             for s in data["assets"]],
+            widths=[Inches(1.7), Inches(1.3), Inches(0.9), Inches(1.5), Inches(1.6)],
+        )
+    else:
+        add_para("No assets were linked to this case.", italic=True, color=GREY)
+    if data["affected_systems_text"]:
+        add_para(f"As originally recorded: {data['affected_systems_text']}",
+                 italic=True, color=GREY)
+
+    add_heading("Response Metrics")
+    add_table(
+        ["Interval", "Elapsed"],
+        [[m["label"], m["value"]] for m in data["response_metrics"]],
+        widths=[Inches(3.4), Inches(3.6)],
+    )
+
+    add_heading("Detection Provenance")
+    if data["alerts"]:
+        add_table(
+            ["Source", "Alert ID", "Severity", "Host", "Detected", "Ingested", "Promoted by"],
+            [[al["source"], al["external_id"], al["severity"], al["host"],
+              al["detected"], al["ingested"], al["promoted_by"]]
+             for al in data["alerts"]],
+            widths=[Inches(0.9), Inches(1.5), Inches(0.8), Inches(1.2),
+                    Inches(1.0), Inches(1.0), Inches(0.6)],
+        )
+    else:
+        add_para(
+            "This case was not raised from an ingested alert. See Method of "
+            "Discovery above for how it came to attention.",
+            italic=True, color=GREY,
+        )
 
     add_heading("Timeline of Events")
     if data["timeline"]:
@@ -692,6 +956,27 @@ def render_docx(data: dict) -> io.BytesIO:
         )
     else:
         add_para("No evidence recorded.", italic=True, color=GREY)
+
+    add_para("Evidence Integrity", bold=True)
+    add_para(data["integrity"]["statement"])
+
+    add_heading("Who Worked This Incident")
+    add_para(f"Lead analyst: {data['lead_analyst']}")
+    if data["contributors"]:
+        add_table(
+            ["Contributor", "Recorded actions", "First", "Last"],
+            [[c["name"], str(c["actions"]), c["first"], c["last"]]
+             for c in data["contributors"]],
+            widths=[Inches(2.2), Inches(1.2), Inches(1.8), Inches(1.8)],
+        )
+        add_para(
+            "Derived from the audit log — actions recorded in CAIRN only. Work "
+            "done outside the console is not represented here.",
+            italic=True, color=GREY,
+        )
+    else:
+        add_para("No attributed actions recorded against this case.",
+                 italic=True, color=GREY)
 
     add_heading("Root Cause")
     add_para(data["root_cause"])
