@@ -128,7 +128,34 @@ def detail(case_id_int):
         for lv in timeline_color_rows
         if 1 <= lv.display_order <= len(TIMELINE_COLORS)
     ]
-    asset_options = parse_affected_systems(case.affected_systems)
+    # Assets attached to this case, plus the vocabularies the tab needs.
+    asset_links = sorted(case.asset_links, key=lambda l: l.asset.name.lower())
+    asset_types = [
+        v.value for v in LookupValue.query
+        .filter_by(list_name="asset_type", is_active=True)
+        .order_by(LookupValue.display_order).all()
+    ]
+    asset_roles = [
+        v.value for v in LookupValue.query
+        .filter_by(list_name="asset_role", is_active=True)
+        .order_by(LookupValue.display_order).all()
+    ]
+
+    # Source for the timeline event "affected assets" picker.
+    #
+    # The case's linked assets now, with anything still listed only in the legacy
+    # affected_systems text folded in — so an option can never vanish from under
+    # a half-written event while both sources are live.
+    #
+    # TimelineEvent.affected_assets stays a text snapshot rather than becoming a
+    # foreign key, and that is deliberate now rather than a limitation. An
+    # incident timeline records what was believed at the time. A live reference
+    # would rewrite every past event the moment somebody renamed an asset, which
+    # is the opposite of what a forensic record is for.
+    asset_options = sorted(
+        {a.name for a in case.assets} | set(parse_affected_systems(case.affected_systems)),
+        key=str.lower,
+    )
 
     # Report tab: IMP severity classification is computed, never stored —
     # it's derived fresh from the two impact axes every time so it can never
@@ -168,6 +195,9 @@ def detail(case_id_int):
     return render_template(
         "cases/detail.html",
         case=case,
+        asset_links=asset_links,
+        asset_types=asset_types,
+        asset_roles=asset_roles,
         iocs=iocs,
         evidence_items=evidence_items,
         timeline_events=timeline_events,

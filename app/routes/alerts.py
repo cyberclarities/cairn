@@ -15,9 +15,16 @@ from flask import (
 )
 from flask_login import current_user, login_required
 
-from ..common import choice, optional_choice, next_case_id, parse_affected_systems
+from sqlalchemy.exc import IntegrityError
+
+from ..common import (
+    choice, optional_choice, next_case_id, parse_affected_systems,
+    normalize_asset_name,
+)
 from ..decorators import analyst_required, admin_required
-from ..models import Alert, Case, AuditLog, IOC, TimelineEvent, db, utcnow
+from ..models import (
+    Alert, Asset, AuditLog, Case, CaseAsset, IOC, TimelineEvent, db, utcnow,
+)
 
 alerts_bp = Blueprint("alerts", __name__, url_prefix="/alerts")
 
@@ -81,15 +88,42 @@ def _alert_asset_and_iocs(alert):
     return asset, deduped
 
 
-def _ensure_affected_asset(case, asset_value):
+def _ensure_affected_asset(case, asset_value, user_id=None):
     """
-    Add asset_value to case.affected_systems if it isn't already listed
-    (case-insensitive) — so re-promoting a second alert for a host already
-    on the case doesn't pile up near-duplicate lines that only differ in
-    case.
+    Record the alert's host against the case, both ways.
+
+    Structured first: resolve asset_value to an Asset and link it. A host that
+    another case already named resolves to that same asset, so promoting an alert
+    puts this case straight into that host's history rather than starting a
+    private copy of the name — which is the whole reason the entity exists.
+
+    Then the legacy text, unchanged in behaviour: appended only if not already
+    listed case-insensitively, so re-promoting a second alert for the same host
+    does not pile up near-duplicate lines. That column is still maintained while
+    both live side by side; see the note on Case.affected_systems.
     """
     if not asset_value:
         return
+
+    norm = normalize_asset_name(asset_value)
+    if norm:
+        asset = Asset.query.filter_by(normalized_name=norm).first()
+        if asset is None:
+            asset = Asset(name=asset_value.strip()[:256], normalized_name=norm,
+                          created_by_id=user_id)
+            db.session.add(asset)
+            try:
+                db.session.flush()
+            except IntegrityError:
+                # Another request created it between the read and the insert.
+                db.session.rollback()
+                asset = Asset.query.filter_by(normalized_name=norm).first()
+        if asset is not None:
+            linked = CaseAsset.query.filter_by(case_id=case.id, asset_id=asset.id).first()
+            if linked is None:
+                db.session.add(CaseAsset(case_id=case.id, asset_id=asset.id,
+                                         added_by_id=user_id))
+
     existing = parse_affected_systems(case.affected_systems)
     if any(v.lower() == asset_value.lower() for v in existing):
         return
@@ -170,7 +204,7 @@ def _alert_to_timeline_event(alert, case, user_id):
 
     affected_assets = None
     if asset:
-        _ensure_affected_asset(case, asset)
+        _ensure_affected_asset(case, asset, user_id=current_user.id)
         affected_assets = asset
 
     linked_iocs = [

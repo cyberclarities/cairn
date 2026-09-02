@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Assets — CAIRN{% endblock %}
+{% block page_title %}Assets{% endblock %}
+
+{% block content %}
+{% if unclassified_count %}
+<div class="alert alert-warning py-2 small d-flex align-items-center justify-content-between mb-3">
+  <div>
+    <i class="bi bi-tags"></i>
+    <strong>{{ unclassified_count }} asset{{ 's' if unclassified_count != 1 else '' }} have no type.</strong>
+    Assets imported from the old affected-systems text were left unclassified rather
+    than guessed from their names — a type nobody chose still reads like a decision
+    somebody made. Set them as you work the cases they belong to.
+  </div>
+  <a href="{{ url_for('assets.list_assets', asset_type='__unclassified__') }}"
+     class="btn btn-sm btn-outline-warning ms-3 text-nowrap">Show them</a>
+</div>
+{% endif %}
+
+<div class="card mb-3">
+  <div class="card-body py-2">
+    <form method="GET" class="row g-2 align-items-end">
+      <div class="col-md-4">
+        <input type="text" name="search" class="form-control form-control-sm"
+               placeholder="Search name, owner, location, notes…" value="{{ search }}">
+      </div>
+      <div class="col-md-3">
+        <select name="asset_type" class="form-select form-select-sm">
+          <option value="">All Types</option>
+          <option value="__unclassified__" {% if sel_type == '__unclassified__' %}selected{% endif %}>— Unclassified —</option>
+          {% for t in asset_types %}
+          <option value="{{ t }}" {% if sel_type == t %}selected{% endif %}>{{ t }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <select name="criticality" class="form-select form-select-sm">
+          <option value="">All Criticality</option>
+          {% for c in criticalities %}
+          <option value="{{ c }}" {% if sel_criticality == c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2 form-check ms-2">
+        <input class="form-check-input" type="checkbox" name="show_inactive" value="1"
+               id="show_inactive" {% if show_inactive %}checked{% endif %}>
+        <label class="form-check-label small" for="show_inactive">Include retired</label>
+      </div>
+      <div class="col-md-auto">
+        <button class="btn btn-sm btn-primary">Filter</button>
+        <a href="{{ url_for('assets.list_assets') }}" class="btn btn-sm btn-outline-secondary">Clear</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header bg-white d-flex justify-content-between align-items-center">
+    <span class="fw-semibold small">{{ assets|length }} asset{{ 's' if assets|length != 1 else '' }}</span>
+    <span class="small text-muted">Assets are attached from a case page</span>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm table-hover mb-0 align-middle">
+      <thead>
+        <tr>
+          <th>Name</th><th>Type</th><th>Criticality</th><th>Owner</th>
+          <th class="text-end">Cases</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in assets %}
+        <tr {% if not a.is_active %}class="text-muted"{% endif %}>
+          <td>
+            <a href="{{ url_for('assets.asset_detail', asset_id=a.id) }}">{{ a.name }}</a>
+            {% if not a.is_active %}<span class="badge bg-secondary ms-1">Retired</span>{% endif %}
+          </td>
+          <td>
+            {% if a.asset_type %}{{ a.asset_type }}
+            {% else %}<span class="badge bg-warning text-dark">Unclassified</span>{% endif %}
+          </td>
+          <td>{{ a.criticality or '—' }}</td>
+          <td class="small">{{ a.owner or '—' }}</td>
+          <td class="text-end">{{ case_counts.get(a.id, 0) }}</td>
+          <td class="text-end">
+            <a href="{{ url_for('assets.asset_detail', asset_id=a.id) }}"
+               class="btn btn-sm btn-outline-secondary">Open</a>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-center text-muted py-4">
+          No assets match. Assets are created by attaching them to a case.
+        </td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -235,6 +235,9 @@
     <a href="{{ url_for('iocs.list_iocs') }}" class="nav-link {% if request.endpoint == 'iocs.list_iocs' %}active{% endif %}">
       <i class="bi bi-bullseye"></i> IOCs
     </a>
+    <a href="{{ url_for('assets.list_assets') }}" class="nav-link {% if request.blueprint == 'assets' %}active{% endif %}">
+      <i class="bi bi-hdd-network"></i> Assets
+    </a>
     <a href="{{ url_for('alerts.list_alerts') }}" class="nav-link {% if request.endpoint == 'alerts.list_alerts' %}active{% endif %}">
       <i class="bi bi-collection"></i> All Alerts
       {% if new_alert_count %}<span class="badge bg-danger ms-auto">{{ new_alert_count }}</span>{% endif %}

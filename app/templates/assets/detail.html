@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}{{ asset.name }} — CAIRN{% endblock %}
+{% block page_title %}{{ asset.name }}{% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <a href="{{ url_for('assets.list_assets') }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left"></i> All assets
+  </a>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-5">
+    <div class="card">
+      <div class="card-header bg-white fw-semibold small">Asset</div>
+      <div class="card-body">
+        {% if current_user.is_analyst %}
+        <form method="POST" action="{{ url_for('assets.edit_asset', asset_id=asset.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Name</label>
+            <input type="text" name="name" class="form-control form-control-sm"
+                   value="{{ asset.name }}" required maxlength="256">
+            <div class="form-text small">
+              Renaming changes how this asset is matched. Two assets cannot share a
+              name — CAIRN refuses rather than merging them, because deciding which
+              case links survive a merge is a judgement call, not a rename.
+            </div>
+          </div>
+          <div class="row g-2">
+            <div class="col-6 mb-2">
+              <label class="form-label small fw-semibold">Type</label>
+              <select name="asset_type" class="form-select form-select-sm">
+                <option value="">— Unclassified —</option>
+                {% for t in asset_types %}
+                <option value="{{ t }}" {% if asset.asset_type == t %}selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-6 mb-2">
+              <label class="form-label small fw-semibold">Criticality</label>
+              <select name="criticality" class="form-select form-select-sm">
+                <option value="">— Not assessed —</option>
+                {% for c in criticalities %}
+                <option value="{{ c }}" {% if asset.criticality == c %}selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+          <div class="row g-2">
+            <div class="col-6 mb-2">
+              <label class="form-label small fw-semibold">Owner</label>
+              <input type="text" name="owner" class="form-control form-control-sm"
+                     value="{{ asset.owner or '' }}" maxlength="256">
+            </div>
+            <div class="col-6 mb-2">
+              <label class="form-label small fw-semibold">Location</label>
+              <input type="text" name="location" class="form-control form-control-sm"
+                     value="{{ asset.location or '' }}" maxlength="256">
+            </div>
+          </div>
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Notes</label>
+            <textarea name="description" class="form-control form-control-sm"
+                      rows="3">{{ asset.description or '' }}</textarea>
+          </div>
+          <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" name="is_active" value="1"
+                   id="is_active" {% if asset.is_active %}checked{% endif %}>
+            <label class="form-check-label small" for="is_active">
+              Active. Untick to retire — the asset stays resolvable so closed cases
+              that reference it keep meaning something.
+            </label>
+          </div>
+          <button class="btn btn-sm btn-primary">Save</button>
+        </form>
+        {% else %}
+        <dl class="row small mb-0">
+          <dt class="col-4">Type</dt><dd class="col-8">{{ asset.type_label }}</dd>
+          <dt class="col-4">Criticality</dt><dd class="col-8">{{ asset.criticality or '—' }}</dd>
+          <dt class="col-4">Owner</dt><dd class="col-8">{{ asset.owner or '—' }}</dd>
+          <dt class="col-4">Location</dt><dd class="col-8">{{ asset.location or '—' }}</dd>
+          <dt class="col-4">Notes</dt><dd class="col-8" style="white-space:pre-wrap;">{{ asset.description or '—' }}</dd>
+        </dl>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-7">
+    <div class="card">
+      <div class="card-header bg-white fw-semibold small">
+        Case history — {{ links|length }} case{{ 's' if links|length != 1 else '' }}
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-sm mb-0 align-middle">
+          <thead><tr><th>Case</th><th>Status</th><th>Role here</th><th>Opened</th></tr></thead>
+          <tbody>
+            {% for l in links %}
+            <tr>
+              <td>
+                <a href="{{ url_for('cases.detail', case_id_int=l.case.id) }}">{{ l.case.case_id }}</a>
+                <div class="small text-muted">{{ l.case.title }}</div>
+              </td>
+              <td><span class="small">{{ l.case.status }}</span></td>
+              <td class="small">{{ l.role or '—' }}</td>
+              <td class="small">{{ l.case.opened_date.strftime('%Y-%m-%d') if l.case.opened_date else '—' }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4" class="text-center text-muted py-4">
+              Not attached to any case yet.
+            </td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

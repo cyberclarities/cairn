@@ -95,6 +95,7 @@
 <ul class="nav nav-tabs mb-0" id="caseTabs" role="tablist">
   {% for tid, tlabel, icon in [
     ("overview","Overview","bi-info-circle"),
+    ("assets","Assets (" + asset_links|length|string + ")","bi-hdd-network"),
     ("iocs","IOCs (" + iocs|length|string + ")","bi-bug"),
     ("evidence","Evidence (" + evidence_items|length|string + ")","bi-archive"),
     ("timeline","Timeline (" + timeline_events|length|string + ")","bi-clock-history"),
@@ -119,8 +120,19 @@
         <div class="section-header">Description</div>
         <p class="small">{{ case.description or '—' }}</p>
 
-        <div class="section-header mt-3">Affected Systems</div>
+        <div class="section-header mt-3">
+          Affected Systems
+          <a href="#assets" class="small fw-normal ms-2"
+             onclick="document.getElementById('assets-tab').click(); return false;">structured assets →</a>
+        </div>
         <p class="small" style="white-space:pre-wrap;">{{ case.affected_systems or '—' }}</p>
+        {% if case.affected_systems and asset_links %}
+        <p class="small text-muted fst-italic mb-0">
+          Kept as originally written. The Assets tab holds the structured version —
+          typed, deduplicated, and shared with every other case that names the same
+          host.
+        </p>
+        {% endif %}
 
         <div class="section-header mt-3">Affected Users / Accounts</div>
         <p class="small" style="white-space:pre-wrap;">{{ case.affected_users or '—' }}</p>
@@ -151,6 +163,111 @@
         </div>
       </div>
     </div>
+  </div>
+
+  <!-- ASSETS TAB -->
+  <div class="tab-pane fade" id="assets">
+    {% if current_user.is_analyst %}
+    <button class="btn btn-sm btn-outline-primary mb-3" data-bs-toggle="modal" data-bs-target="#addAssetModal">
+      <i class="bi bi-plus-lg"></i> Attach Assets
+    </button>
+    {% endif %}
+
+    {% if asset_links %}
+    <div class="table-responsive">
+      <table class="table table-sm table-hover align-middle">
+        <thead><tr>
+          <th>Asset</th><th>Type</th><th>Criticality</th><th>Role in this case</th>
+          <th>Other cases</th>{% if current_user.is_analyst %}<th></th>{% endif %}
+        </tr></thead>
+        <tbody>
+        {% for link in asset_links %}
+        <tr>
+          <td>
+            <a href="{{ url_for('assets.asset_detail', asset_id=link.asset.id) }}">{{ link.asset.name }}</a>
+            {% if link.notes %}<div class="small text-muted">{{ link.notes }}</div>{% endif %}
+          </td>
+          <td>
+            {% if link.asset.asset_type %}<span class="badge bg-secondary">{{ link.asset.asset_type }}</span>
+            {% else %}<span class="badge bg-warning text-dark">Unclassified</span>{% endif %}
+          </td>
+          <td class="small">{{ link.asset.criticality or '—' }}</td>
+          <td class="small">{{ link.role or '—' }}</td>
+          <td class="small">
+            {% set others = link.asset.case_links.count() - 1 %}
+            {% if others > 0 %}
+              <a href="{{ url_for('assets.asset_detail', asset_id=link.asset.id) }}">{{ others }} other</a>
+            {% else %}—{% endif %}
+          </td>
+          {% if current_user.is_analyst %}
+          <td class="text-end text-nowrap">
+            <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal"
+                    data-bs-target="#editAsset{{ link.id }}">Edit</button>
+            <form method="POST" class="d-inline"
+                  action="{{ url_for('assets.remove_case_asset', case_id_int=case.id, link_id=link.id) }}"
+                  onsubmit="return confirm('Detach {{ link.asset.name }} from this case?\n\nThe asset record and every other case using it are unaffected.')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="btn btn-sm btn-outline-danger">Detach</button>
+            </form>
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if current_user.is_analyst %}
+    {% for link in asset_links %}
+    <div class="modal fade" id="editAsset{{ link.id }}" tabindex="-1">
+      <div class="modal-dialog">
+        <form method="POST" action="{{ url_for('assets.update_case_asset', case_id_int=case.id, link_id=link.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h6 class="modal-title">{{ link.asset.name }} on {{ case.case_id }}</h6>
+              <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+              <p class="small text-muted">
+                These two fields belong to this case only. To change the asset
+                itself — its type, owner, criticality —
+                <a href="{{ url_for('assets.asset_detail', asset_id=link.asset.id) }}">open the asset</a>.
+              </p>
+              <div class="mb-3">
+                <label class="form-label small fw-semibold">Role in this incident</label>
+                <select name="role" class="form-select form-select-sm">
+                  <option value="">— Not determined —</option>
+                  {% for r in asset_roles %}
+                  <option value="{{ r }}" {% if link.role == r %}selected{% endif %}>{{ r }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="mb-2">
+                <label class="form-label small fw-semibold">Notes</label>
+                <textarea name="notes" class="form-control form-control-sm" rows="3">{{ link.notes or '' }}</textarea>
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+              <button class="btn btn-sm btn-primary">Save</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    {% else %}
+    <p class="text-muted small">
+      No assets attached to this case yet.
+      {% if case.affected_systems %}
+      The Affected Systems text on the Overview tab is still recorded and is shown
+      there unchanged.
+      {% endif %}
+    </p>
+    {% endif %}
   </div>
 
   <!-- IOCs TAB -->
@@ -576,6 +693,45 @@
 
 
 <!-- ADD IOC MODAL -->
+<div class="modal fade" id="addAssetModal" tabindex="-1">
+  <div class="modal-dialog">
+    <form method="POST" action="{{ url_for('assets.add_case_asset', case_id_int=case.id) }}" class="modal-content">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="modal-header">
+        <h5 class="modal-title">Attach Assets</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">Assets — one per line</label>
+          <textarea name="asset_names" class="form-control" rows="5" required
+                    placeholder="DC01&#10;fileserver01.corp.example&#10;10.20.30.40"></textarea>
+          <div class="form-text small">
+            A name CAIRN already knows is reused, so the case joins the existing
+            asset and its history rather than making a second copy. Matching
+            ignores case and surrounding spaces. A name it has not seen creates a
+            new asset, unclassified until somebody sets a type.
+          </div>
+        </div>
+        <div class="mb-2">
+          <label class="form-label small fw-semibold">Role in this incident (optional)</label>
+          <select name="role" class="form-select form-select-sm">
+            <option value="">— Not determined —</option>
+            {% for r in asset_roles %}
+            <option value="{{ r }}">{{ r }}</option>
+            {% endfor %}
+          </select>
+          <div class="form-text small">Applied to every asset in this batch. Change them individually afterwards.</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-sm btn-primary">Attach</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <div class="modal fade" id="addIocModal" tabindex="-1">
   <div class="modal-dialog modal-lg">
     <form method="POST" action="{{ url_for('iocs.add_ioc', case_id_int=case.id) }}" class="modal-content">
