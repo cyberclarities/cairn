@@ -28,6 +28,25 @@ from ..models import (
 
 alerts_bp = Blueprint("alerts", __name__, url_prefix="/alerts")
 
+# Statuses an analyst may set directly from the queue.
+#
+# "promoted" is deliberately absent. It does not mean "an analyst thinks this is
+# important" — it means "linked to a case", and there is no such thing as promoted
+# with no case. It is reached through promote() or link_to_case(), both of which
+# make you choose one. Offering it here would manufacture exactly the
+# inconsistency settings.delete_case() exists to clean up: an alert claiming
+# status="promoted" against a null case_id, which reads as triaged work that was
+# never done.
+SETTABLE_STATUSES = ("new", "reviewing", "dismissed")
+
+STATUS_LABELS = {
+    "new": "New",
+    "reviewing": "Reviewing",
+    "promoted": "Promoted",
+    "dismissed": "Dismissed",
+}
+
+
 SOURCES = ["crowdstrike", "proofpoint"]
 
 
@@ -294,6 +313,8 @@ def _list_alerts(forced_source=None, page_title="Alert Queue"):
     return render_template(
         "alerts/list.html",
         alerts=alerts,
+        settable_statuses=SETTABLE_STATUSES,
+        status_labels=STATUS_LABELS,
         status_filter=status_filter,
         search=search,
         severity_filter=severity_filter,
@@ -342,7 +363,9 @@ def detail(alert_id):
             raw = json.loads(alert.raw_json)
         except Exception:
             pass
-    return render_template("alerts/detail.html", alert=alert, raw=raw)
+    return render_template("alerts/detail.html", alert=alert, raw=raw,
+                           settable_statuses=SETTABLE_STATUSES,
+                           status_labels=STATUS_LABELS)
 
 
 @alerts_bp.route("/<int:alert_id>/review", methods=["POST"])
@@ -352,12 +375,98 @@ def review(alert_id):
     alert = db.get_or_404(Alert, alert_id)
     notes = request.form.get("notes", "").strip()
     alert.status = "reviewing"
-    alert.notes = notes
+    # `notes or alert.notes`, not a bare assignment. Submitting this form with an
+    # empty box used to erase whatever an analyst had already written, silently.
+    alert.notes = notes or alert.notes
     alert.reviewed_by_id = current_user.id
     alert.reviewed_at = utcnow()
     db.session.commit()
     flash("Alert marked as under review.", "info")
     return redirect(url_for("alerts.detail", alert_id=alert_id))
+
+
+@alerts_bp.route("/<int:alert_id>/status", methods=["POST"])
+@login_required
+@analyst_required
+def set_status(alert_id):
+    """
+    Move an alert between workflow states, in any direction.
+
+    Before this, the queue was one-way: new and reviewing could go to dismissed or
+    promoted, and nothing came back. An alert dismissed too eagerly at 2am was
+    dismissed permanently, which quietly encourages analysts to leave things in
+    the New column rather than triage them — the opposite of what the queue is
+    for.
+
+    Moving OUT of promoted unlinks the alert from its case and leaves everything
+    the promotion created — the timeline event, the IOCs, the linked assets —
+    exactly where it is. That follows settings.delete_case(), which made the same
+    call for the same reason: an analyst may have edited that timeline event
+    since, and deleting case content to correct an alert's workflow state is a
+    bad trade. The flash message says plainly what was not undone, because
+    "moved to New" on its own would imply more than happened.
+    """
+    alert = db.get_or_404(Alert, alert_id)
+    target = request.form.get("status", "").strip().lower()
+    notes = request.form.get("notes", "").strip()
+    back = request.form.get("next") or url_for("alerts.list_alerts")
+
+    if target not in SETTABLE_STATUSES:
+        flash(
+            "That is not a status an alert can be moved to directly. To mark an "
+            "alert as promoted, promote it to a new case or link it to an "
+            "existing one — promoted means linked to a case.",
+            "danger",
+        )
+        return redirect(back)
+
+    old_status = alert.status
+    if old_status == target:
+        flash(f"Alert is already {STATUS_LABELS[target]}.", "info")
+        return redirect(back)
+
+    unlinked_from = None
+    if alert.case_id:
+        # Leaving a case behind. Record the unlink against that case, so the
+        # case's own audit trail shows the alert going as well as arriving.
+        unlinked_from = alert.case
+        _log_audit("alert", alert.id, "case_id",
+                   str(alert.case_id), None, case_id=alert.case_id)
+        alert.case_id = None
+
+    alert.status = target
+    alert.reviewed_by_id = current_user.id
+    alert.reviewed_at = utcnow()
+
+    if notes:
+        # Appended, never replaced. The note explains one transition; the earlier
+        # ones explain the earlier transitions, and an alert that has been round
+        # the loop twice is exactly the alert whose history matters.
+        stamp = utcnow().strftime("%Y-%m-%d %H:%M UTC")
+        entry = (f"[{stamp}] {STATUS_LABELS.get(old_status, old_status)} → "
+                 f"{STATUS_LABELS[target]}: {notes}")
+        alert.notes = (alert.notes + "\n" + entry) if alert.notes else entry
+
+    _log_audit("alert", alert.id, "status", old_status, target,
+               case_id=unlinked_from.id if unlinked_from else None)
+    db.session.commit()
+
+    if unlinked_from:
+        flash(
+            f"Alert moved from {STATUS_LABELS.get(old_status, old_status)} to "
+            f"{STATUS_LABELS[target]} and unlinked from {unlinked_from.case_id}. "
+            f"What the promotion added to that case — the timeline event, any "
+            f"IOCs and linked assets — was left in place and has not been "
+            f"removed.",
+            "warning",
+        )
+    else:
+        flash(
+            f"Alert moved from {STATUS_LABELS.get(old_status, old_status)} to "
+            f"{STATUS_LABELS[target]}.",
+            "success",
+        )
+    return redirect(back)
 
 
 @alerts_bp.route("/<int:alert_id>/dismiss", methods=["POST"])

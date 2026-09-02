@@ -160,7 +160,34 @@
                 </a>
                 {% endif %}
               </td>
-              <td class="text-end pe-3" onclick="event.stopPropagation()">
+              <td class="text-end pe-3 text-nowrap" onclick="event.stopPropagation()">
+                {% if current_user.is_analyst %}
+                {# Present on every tab, Promoted and Dismissed included. Those
+                   were read-only, which is what made a hasty 2am dismissal
+                   permanent. The button builds its own form (script at the foot
+                   of this file) because this table sits inside the bulk-action
+                   form and a form cannot nest inside another. #}
+                <div class="btn-group">
+                  <button type="button"
+                          class="btn btn-xs btn-outline-secondary btn-sm py-0 px-2 dropdown-toggle"
+                          data-bs-toggle="dropdown" title="Move to another status">
+                    <i class="bi bi-arrow-left-right"></i>
+                  </button>
+                  <ul class="dropdown-menu dropdown-menu-end">
+                    <li><h6 class="dropdown-header small">Move to</h6></li>
+                    {% for s in settable_statuses %}
+                      {% if s != a.status %}
+                      <li>
+                        <button type="button" class="dropdown-item small"
+                                onclick="cairnMoveAlert({{ a.id }}, {{ s|tojson }}, {{ (a.status == 'promoted')|tojson }}, {{ (a.case.case_id if a.case else '')|tojson }})">
+                          {{ status_labels[s] }}
+                        </button>
+                      </li>
+                      {% endif %}
+                    {% endfor %}
+                  </ul>
+                </div>
+                {% endif %}
                 <a href="{{ url_for('alerts.detail', alert_id=a.id) }}"
                    class="btn btn-xs btn-outline-secondary btn-sm py-0 px-2">
                   <i class="bi bi-eye"></i>
@@ -287,6 +314,7 @@
 
 {% block extra_js %}
 <script>
+const CAIRN_CSRF = {{ csrf_token()|tojson }};
 (function () {
   const checks = () => document.querySelectorAll('.alert-check');
   const selectAll  = document.getElementById('selectAll');
@@ -340,5 +368,38 @@
     });
   });
 })();
+
+// Move an alert to another status.
+//
+// Builds and submits its own form rather than living in one: this table sits
+// inside #bulkForm and a form cannot nest inside another. Same reason the case
+// Danger Zone does it this way.
+//
+// Leaving Promoted asks first, and says what will NOT happen — the timeline
+// event, IOCs and assets the promotion added stay on the case. "Moved to New"
+// on its own would imply more than the server actually does.
+function cairnMoveAlert(alertId, status, isPromoted, caseLabel) {
+  if (isPromoted) {
+    var where = caseLabel ? ' from ' + caseLabel : ' from its case';
+    if (!confirm(
+          'Move this alert out of Promoted and unlink it' + where + '?\n\n' +
+          'The timeline event, IOCs and assets the promotion added to that case ' +
+          'stay where they are — nothing on the case is removed.')) {
+      return;
+    }
+  }
+  var f = document.createElement('form');
+  f.method = 'POST';
+  f.action = '/alerts/' + alertId + '/status';
+  [['csrf_token', CAIRN_CSRF], ['status', status],
+   ['next', window.location.pathname + window.location.search]
+  ].forEach(function (pair) {
+    var i = document.createElement('input');
+    i.type = 'hidden'; i.name = pair[0]; i.value = pair[1];
+    f.appendChild(i);
+  });
+  document.body.appendChild(f);
+  f.submit();
+}
 </script>
 {% endblock %}

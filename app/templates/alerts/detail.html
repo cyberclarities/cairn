@@ -115,6 +115,55 @@
       <div class="card-body small" style="white-space:pre-wrap">{{ alert.description or 'No description provided.' }}</div>
     </div>
 
+    {% if current_user.is_analyst %}
+    <div class="card mb-3">
+      <div class="card-header fw-semibold small">Status</div>
+      <div class="card-body">
+        <p class="small text-muted">
+          Currently <span class="badge bg-{{ alert.status_color }}">{{ alert.status }}</span>{% if alert.case %}, linked to
+          <a href="{{ url_for('cases.detail', case_id_int=alert.case.id) }}">{{ alert.case.case_id }}</a>{% endif %}.
+          An alert can be moved between these at any time — a dismissal is a
+          judgement, not a one-way door.
+        </p>
+        {% if alert.status == 'promoted' %}
+        <div class="alert alert-warning py-2 small">
+          <i class="bi bi-exclamation-triangle"></i>
+          Moving this out of Promoted unlinks it from
+          {% if alert.case %}{{ alert.case.case_id }}{% else %}its case{% endif %}.
+          The timeline event, IOCs and assets the promotion added to that case
+          stay where they are — nothing on the case is removed.
+        </div>
+        {% endif %}
+        <form method="POST" action="{{ url_for('alerts.set_status', alert_id=alert.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="next" value="{{ url_for('alerts.detail', alert_id=alert.id) }}">
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Move to</label>
+            <select name="status" class="form-select form-select-sm" required>
+              {% for s in settable_statuses %}
+                {% if s != alert.status %}
+                <option value="{{ s }}">{{ status_labels[s] }}</option>
+                {% endif %}
+              {% endfor %}
+            </select>
+            <div class="form-text small">
+              Promoted is not in this list. It means "linked to a case", so it is
+              reached by promoting to a new case or linking to an existing one —
+              not by setting a field.
+            </div>
+          </div>
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Reason (optional)</label>
+            <input type="text" name="notes" class="form-control form-control-sm"
+                   maxlength="500" placeholder="Why is this moving?">
+            <div class="form-text small">Appended to the notes below with a timestamp, never replacing what is there.</div>
+          </div>
+          <button class="btn btn-sm btn-primary">Move</button>
+        </form>
+      </div>
+    </div>
+    {% endif %}
+
     <div class="card mb-3">
       <div class="card-header fw-semibold small">Analyst Notes</div>
       <div class="card-body">
