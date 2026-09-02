@@ -88,8 +88,10 @@
   <div class="card">
     <div class="card-header bg-white d-flex justify-content-between align-items-center">
       <span class="fw-semibold small">{{ alerts|length }} alert{{ 's' if alerts|length != 1 }}</span>
-      {% if current_user.is_analyst and status_filter in ('new','reviewing') %}
+      {% if current_user.is_analyst %}
       <div class="d-flex gap-2">
+        {# Promote and Link only make sense for something not already on a case. #}
+        {% if status_filter in ('new','reviewing') %}
         <button type="button" class="btn btn-sm btn-success" id="btnPromote"
                 data-bs-toggle="modal" data-bs-target="#promoteModal" disabled>
           <i class="bi bi-arrow-up-circle"></i> Promote to Case
@@ -98,10 +100,26 @@
                 data-bs-toggle="modal" data-bs-target="#linkModal" disabled>
           <i class="bi bi-link-45deg"></i> Link to Case
         </button>
-        <button type="button" class="btn btn-sm btn-outline-warning" id="btnDismiss"
-                data-bs-toggle="modal" data-bs-target="#dismissBulkModal" disabled>
-          <i class="bi bi-x-circle"></i> Dismiss Selected
-        </button>
+        {% endif %}
+        {# On every tab. The Promoted and Dismissed queues were read-only, which
+           is what made a hasty bulk dismissal permanent. #}
+        <div class="btn-group">
+          <button type="button" class="btn btn-sm btn-outline-warning dropdown-toggle"
+                  id="btnMove" data-bs-toggle="dropdown" disabled>
+            <i class="bi bi-arrow-left-right"></i> Move Selected
+          </button>
+          <ul class="dropdown-menu dropdown-menu-end">
+            <li><h6 class="dropdown-header small">Move selected to</h6></li>
+            {% for s in settable_statuses %}
+            <li>
+              <button type="button" class="dropdown-item small"
+                      onclick="cairnOpenBulkMove({{ s|tojson }}, {{ status_labels[s]|tojson }})">
+                {{ status_labels[s] }}
+              </button>
+            </li>
+            {% endfor %}
+          </ul>
+        </div>
       </div>
       {% endif %}
     </div>
@@ -131,7 +149,9 @@
             <tr onclick="location.href='{{ url_for('alerts.detail', alert_id=a.id) }}'">
               {% if current_user.is_analyst %}
               <td class="ps-3" onclick="event.stopPropagation()">
-                <input type="checkbox" class="form-check-input alert-check" name="alert_ids" value="{{ a.id }}">
+                <input type="checkbox" class="form-check-input alert-check" name="alert_ids"
+                         value="{{ a.id }}" data-status="{{ a.status }}"
+                         data-case="{{ a.case.case_id if a.case else '' }}">
               </td>
               {% endif %}
               <td>
@@ -278,35 +298,65 @@
   </div>
 </div>
 
-<div class="modal fade" id="dismissBulkModal" tabindex="-1">
+<div class="modal fade" id="bulkMoveModal" tabindex="-1">
   <div class="modal-dialog">
-    <form method="POST" action="{{ url_for('alerts.bulk_dismiss') }}" class="modal-content" id="dismissForm">
+    <form method="POST" action="{{ url_for('alerts.bulk_status') }}" class="modal-content" id="bulkMoveForm">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="status" id="bulkMoveStatus" value="">
+      <input type="hidden" name="next" id="bulkMoveNext" value="">
       <div class="modal-header">
-        <h5 class="modal-title"><i class="bi bi-x-circle me-2"></i>Dismiss Alerts</h5>
+        <h5 class="modal-title">
+          <i class="bi bi-arrow-left-right me-2"></i>Move to <span id="bulkMoveTarget"></span>
+        </h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
-        <p class="small mb-3"><span id="dismissSubtitle" class="fw-semibold"></span> will be marked dismissed.</p>
-        <label class="form-label small fw-semibold">Reason <span class="text-muted fw-normal">(optional)</span></label>
-        <select name="reason" class="form-select form-select-sm mb-2">
-          <option value="">— Select a reason —</option>
-          <option value="False Positive">False Positive</option>
-          <option value="Duplicate">Duplicate alert</option>
-          <option value="Expected Behaviour">Expected / Authorized behaviour</option>
-          <option value="Out of Scope">Out of scope</option>
-          <option value="Noise">Noise / Informational only</option>
-          <option value="Other">Other</option>
-        </select>
+        <p class="small mb-3">
+          <span id="bulkMoveSubtitle" class="fw-semibold"></span> will be moved to
+          <span id="bulkMoveTarget2"></span>.
+        </p>
+
+        <div id="bulkMovePromotedWarning" class="alert alert-warning py-2 small d-none">
+          <i class="bi bi-exclamation-triangle"></i>
+          <span id="bulkMovePromotedCount"></span> of these are currently Promoted and
+          will be unlinked from their case. The timeline events, IOCs and assets those
+          promotions added stay on the cases — nothing on a case is removed.
+        </div>
+
+        <div id="bulkMoveSkipNote" class="alert alert-secondary py-2 small d-none">
+          <span id="bulkMoveSkipCount"></span> already in that status and will be left
+          untouched, not rewritten.
+        </div>
+
+        <div id="bulkMoveReasonWrap">
+          <label class="form-label small fw-semibold">Reason <span class="text-muted fw-normal">(optional)</span></label>
+          <select name="reason" class="form-select form-select-sm mb-2">
+            <option value="">— Select a reason —</option>
+            <option value="False Positive">False Positive</option>
+            <option value="Duplicate">Duplicate alert</option>
+            <option value="Expected Behaviour">Expected / Authorized behaviour</option>
+            <option value="Out of Scope">Out of scope</option>
+            <option value="Noise">Noise / Informational only</option>
+            <option value="Reopened">Reopened for review</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
         <textarea name="notes" class="form-control form-control-sm" rows="2"
                   placeholder="Additional notes…"></textarea>
+        <div class="form-text small">
+          Appended to each alert's notes with a timestamp and the transition, never
+          replacing what is already there.
+        </div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-        <button type="submit" class="btn btn-warning btn-sm"><i class="bi bi-x-circle"></i> Dismiss</button>
+        <button type="submit" class="btn btn-warning btn-sm">
+          <i class="bi bi-arrow-left-right"></i> Move
+        </button>
       </div>
     </form>
   </div>
+</div>
 </div>
 {% endif %}
 
@@ -320,10 +370,10 @@ const CAIRN_CSRF = {{ csrf_token()|tojson }};
   const selectAll  = document.getElementById('selectAll');
   const btnPromote = document.getElementById('btnPromote');
   const btnLink    = document.getElementById('btnLink');
-  const btnDismiss = document.getElementById('btnDismiss');
+  const btnMove = document.getElementById('btnMove');
   const promoteForm = document.getElementById('promoteForm');
   const linkForm    = document.getElementById('linkForm');
-  const dismissForm = document.getElementById('dismissForm');
+  const bulkMoveForm = document.getElementById('bulkMoveForm');
 
   function selectedIds() { return [...checks()].filter(c => c.checked).map(c => c.value); }
   function selectedLabel() { const n = selectedIds().length; return n === 1 ? '1 alert' : `${n} alerts`; }
@@ -332,7 +382,7 @@ const CAIRN_CSRF = {{ csrf_token()|tojson }};
     const any = selectedIds().length > 0;
     if (btnPromote) btnPromote.disabled = !any;
     if (btnLink)    btnLink.disabled    = !any;
-    if (btnDismiss) btnDismiss.disabled = !any;
+    if (btnMove) btnMove.disabled = !any;
   }
 
   function injectIds(form) {
@@ -347,7 +397,7 @@ const CAIRN_CSRF = {{ csrf_token()|tojson }};
   function updateSubtitles() {
     const label = selectedLabel();
     ['promoteSubtitle','linkSubtitle'].forEach(id => { const el = document.getElementById(id); if (el) el.textContent = label + ' selected'; });
-    const ds = document.getElementById('dismissSubtitle');
+    const ds = document.getElementById('bulkMoveSubtitle');
     if (ds) ds.textContent = label;
   }
 
@@ -358,11 +408,11 @@ const CAIRN_CSRF = {{ csrf_token()|tojson }};
     }
   });
 
-  ['promoteModal','linkModal','dismissBulkModal'].forEach(modalId => {
+  ['promoteModal','linkModal','bulkMoveModal'].forEach(modalId => {
     const el = document.getElementById(modalId);
     if (!el) return;
     el.addEventListener('show.bs.modal', () => {
-      const formMap = { promoteModal: promoteForm, linkModal: linkForm, dismissBulkModal: dismissForm };
+      const formMap = { promoteModal: promoteForm, linkModal: linkForm, bulkMoveModal: bulkMoveForm };
       const form = formMap[modalId];
       if (form) { injectIds(form); updateSubtitles(); }
     });
@@ -400,6 +450,50 @@ function cairnMoveAlert(alertId, status, isPromoted, caseLabel) {
   });
   document.body.appendChild(f);
   f.submit();
+}
+
+// Open the bulk-move modal for one target status.
+//
+// Reads each selected checkbox's data-status so the modal can say, before you
+// commit, how many are Promoted (and will be unlinked from their case) and how
+// many are already in the target (and will be left alone rather than rewritten
+// with a fresh timestamp). A bulk action that touches rows it did not need to
+// touch makes the audit log overstate what happened.
+function cairnOpenBulkMove(status, label) {
+  var selected = [].slice.call(document.querySelectorAll('.alert-check:checked'));
+  if (!selected.length) { return; }
+
+  document.getElementById('bulkMoveStatus').value = status;
+  document.getElementById('bulkMoveNext').value =
+    window.location.pathname + window.location.search;
+  ['bulkMoveTarget', 'bulkMoveTarget2'].forEach(function (id) {
+    document.getElementById(id).textContent = label;
+  });
+
+  var promoted = selected.filter(function (c) { return c.dataset.status === 'promoted'; });
+  var already  = selected.filter(function (c) { return c.dataset.status === status; });
+
+  var warn = document.getElementById('bulkMovePromotedWarning');
+  warn.classList.toggle('d-none', promoted.length === 0);
+  if (promoted.length) {
+    var cases = promoted.map(function (c) { return c.dataset.case; })
+                        .filter(function (v, i, a) { return v && a.indexOf(v) === i; });
+    document.getElementById('bulkMovePromotedCount').textContent =
+      promoted.length + (cases.length ? ' (' + cases.join(', ') + ')' : '');
+  }
+
+  var skip = document.getElementById('bulkMoveSkipNote');
+  skip.classList.toggle('d-none', already.length === 0);
+  if (already.length) {
+    document.getElementById('bulkMoveSkipCount').textContent = already.length;
+  }
+
+  // The reason list is written for dismissals; it only helps there.
+  document.getElementById('bulkMoveReasonWrap')
+          .classList.toggle('d-none', status !== 'dismissed');
+
+  bootstrap.Modal.getOrCreateInstance(
+    document.getElementById('bulkMoveModal')).show();
 }
 </script>
 {% endblock %}

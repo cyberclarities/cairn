@@ -385,6 +385,48 @@ def review(alert_id):
     return redirect(url_for("alerts.detail", alert_id=alert_id))
 
 
+def _apply_status_change(alert, target, note_text, actor_id, now):
+    """
+    Move one alert to *target*. Returns (changed, unlinked_case).
+
+    Single and bulk both come through here, deliberately. The previous bulk path
+    had its own copy of this logic and had drifted from the single one in three
+    ways, all of them silent: it replaced the alert's notes with None when no
+    reason was given, it wrote no audit entries at all, and it never cleared
+    case_id — so bulk-dismissing a promoted alert left status="dismissed"
+    against a live case link. Two routes doing the same thing is how they drift,
+    and these had.
+
+    Leaving a case unlinks the alert and keeps everything the promotion put on
+    that case. See set_status() for why.
+    """
+    old_status = alert.status
+    if old_status == target:
+        return False, None
+
+    unlinked = None
+    if alert.case_id:
+        unlinked = alert.case
+        _log_audit("alert", alert.id, "case_id",
+                   str(alert.case_id), None, case_id=alert.case_id)
+        alert.case_id = None
+
+    alert.status = target
+    alert.reviewed_by_id = actor_id
+    alert.reviewed_at = now
+
+    if note_text:
+        # Appended, never replaced.
+        stamp = now.strftime("%Y-%m-%d %H:%M UTC")
+        entry = (f"[{stamp}] {STATUS_LABELS.get(old_status, old_status)} → "
+                 f"{STATUS_LABELS[target]}: {note_text}")
+        alert.notes = (alert.notes + "\n" + entry) if alert.notes else entry
+
+    _log_audit("alert", alert.id, "status", old_status, target,
+               case_id=unlinked.id if unlinked else None)
+    return True, unlinked
+
+
 @alerts_bp.route("/<int:alert_id>/status", methods=["POST"])
 @login_required
 @analyst_required
@@ -421,34 +463,12 @@ def set_status(alert_id):
         return redirect(back)
 
     old_status = alert.status
-    if old_status == target:
+    changed, unlinked_from = _apply_status_change(
+        alert, target, notes, current_user.id, utcnow()
+    )
+    if not changed:
         flash(f"Alert is already {STATUS_LABELS[target]}.", "info")
         return redirect(back)
-
-    unlinked_from = None
-    if alert.case_id:
-        # Leaving a case behind. Record the unlink against that case, so the
-        # case's own audit trail shows the alert going as well as arriving.
-        unlinked_from = alert.case
-        _log_audit("alert", alert.id, "case_id",
-                   str(alert.case_id), None, case_id=alert.case_id)
-        alert.case_id = None
-
-    alert.status = target
-    alert.reviewed_by_id = current_user.id
-    alert.reviewed_at = utcnow()
-
-    if notes:
-        # Appended, never replaced. The note explains one transition; the earlier
-        # ones explain the earlier transitions, and an alert that has been round
-        # the loop twice is exactly the alert whose history matters.
-        stamp = utcnow().strftime("%Y-%m-%d %H:%M UTC")
-        entry = (f"[{stamp}] {STATUS_LABELS.get(old_status, old_status)} → "
-                 f"{STATUS_LABELS[target]}: {notes}")
-        alert.notes = (alert.notes + "\n" + entry) if alert.notes else entry
-
-    _log_audit("alert", alert.id, "status", old_status, target,
-               case_id=unlinked_from.id if unlinked_from else None)
     db.session.commit()
 
     if unlinked_from:
@@ -621,20 +641,44 @@ def link_to_case():
 # Bulk dismiss
 # ---------------------------------------------------------------------------
 
-@alerts_bp.route("/bulk-dismiss", methods=["POST"])
+@alerts_bp.route("/bulk-status", methods=["POST"])
 @login_required
 @analyst_required
-def bulk_dismiss():
-    alert_ids_raw = request.form.getlist("alert_ids")
-    reason        = request.form.get("reason", "").strip()
-    notes         = request.form.get("notes", "").strip()
+def bulk_status():
+    """
+    Move every selected alert to one status.
 
-    if not alert_ids_raw:
+    Replaces the old /bulk-dismiss, which could only ever reach one destination
+    and had drifted from the single-alert path in three silent ways — see
+    _apply_status_change() for what those were. Both paths now share that
+    function, so there is one place where an alert's status changes.
+
+    Alerts already in the target status are counted and left completely alone
+    rather than being rewritten with a fresh timestamp and a duplicate note. A
+    bulk action that touches rows it did not need to touch makes the audit log
+    lie about how much happened.
+    """
+    ids_raw = request.form.getlist("alert_ids")
+    target = request.form.get("status", "").strip().lower()
+    reason = request.form.get("reason", "").strip()
+    notes = request.form.get("notes", "").strip()
+    back = request.form.get("next") or url_for("alerts.list_alerts")
+
+    if target not in SETTABLE_STATUSES:
+        flash(
+            "That is not a status alerts can be moved to directly. To promote, "
+            "use Promote to Case or Link to Case — promoted means linked to a "
+            "case.",
+            "danger",
+        )
+        return redirect(back)
+
+    if not ids_raw:
         flash("No alerts selected.", "warning")
-        return redirect(url_for("alerts.list_alerts"))
+        return redirect(back)
 
     try:
-        alert_ids = [int(i) for i in alert_ids_raw]
+        alert_ids = [int(i) for i in ids_raw]
     except ValueError:
         abort(400)
 
@@ -642,19 +686,39 @@ def bulk_dismiss():
     if not selected:
         abort(404)
 
-    combined_notes = " | ".join(filter(None, [reason, notes])) or None
+    note_text = " | ".join(filter(None, [reason, notes]))
     now = utcnow()
+    moved, skipped, unlinked_cases = 0, 0, []
 
     for a in selected:
-        a.status = "dismissed"
-        a.notes = combined_notes
-        a.reviewed_by_id = current_user.id
-        a.reviewed_at = now
+        changed, unlinked = _apply_status_change(a, target, note_text,
+                                                 current_user.id, now)
+        if changed:
+            moved += 1
+            if unlinked is not None:
+                unlinked_cases.append(unlinked.case_id)
+        else:
+            skipped += 1
 
     db.session.commit()
-    n = len(selected)
-    flash(f"{n} alert{'s' if n > 1 else ''} dismissed.", "warning")
-    return redirect(url_for("alerts.list_alerts"))
+
+    label = STATUS_LABELS[target]
+    if moved:
+        msg = f"{moved} alert{'s' if moved != 1 else ''} moved to {label}."
+        if unlinked_cases:
+            shown = ", ".join(sorted(set(unlinked_cases))[:5])
+            more = (f" and {len(set(unlinked_cases)) - 5} more"
+                    if len(set(unlinked_cases)) > 5 else "")
+            msg += (f" {len(unlinked_cases)} unlinked from {shown}{more} — what "
+                    f"those promotions added to those cases was left in place "
+                    f"and has not been removed.")
+        flash(msg, "warning" if unlinked_cases else "success")
+    if skipped:
+        flash(f"{skipped} already {label}; left untouched.", "info")
+    if not moved and not skipped:
+        flash("Nothing to move.", "warning")
+
+    return redirect(back)
 
 
 # ---------------------------------------------------------------------------

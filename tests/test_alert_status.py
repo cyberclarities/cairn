@@ -258,3 +258,145 @@ def test_saving_empty_review_notes_does_not_erase_existing_ones(app):
     c.post(f"/alerts/{aid}/review", data={"notes": ""})
     with app.app_context():
         assert db.session.get(Alert, aid).notes == "hard-won investigation detail"
+
+
+# ---------------------------------------------------------------------------
+# Bulk movement
+# ---------------------------------------------------------------------------
+
+def _case(app):
+    from app.models import Case, db
+
+    with app.app_context():
+        c = Case(case_id="BK-" + uuid.uuid4().hex[:6], title="bulk", severity="High",
+                 status="New", escalated=False, board_flagged=False)
+        db.session.add(c)
+        db.session.commit()
+        return c.id
+
+
+def test_bulk_moves_every_selected_alert(app):
+    c = _client(app)
+    ids = [_alert(app, status="new") for _ in range(3)]
+    c.post("/alerts/bulk-status",
+           data={"alert_ids": [str(i) for i in ids], "status": "dismissed"})
+    assert all(_status(app, i)[0] == "dismissed" for i in ids)
+
+
+def test_bulk_leaves_alerts_already_in_the_target_completely_untouched(app):
+    """
+    Not merely unchanged in status — untouched. Rewriting a row with a fresh
+    timestamp and a duplicate note makes the audit log overstate what happened.
+    """
+    from app.models import Alert, AuditLog, db
+
+    c = _client(app)
+    already = _alert(app, status="dismissed", notes="do not touch me")
+    moving = _alert(app, status="new")
+
+    c.post("/alerts/bulk-status",
+           data={"alert_ids": [str(already), str(moving)], "status": "dismissed",
+                 "reason": "False Positive"})
+
+    with app.app_context():
+        a = db.session.get(Alert, already)
+        assert a.notes == "do not touch me"
+        assert AuditLog.query.filter_by(entity_type="alert", entity_id=already).count() == 0
+        assert db.session.get(Alert, moving).status == "dismissed"
+
+
+def test_bulk_unlinks_promoted_alerts_but_keeps_the_case_content(app):
+    """
+    The old /bulk-dismiss never cleared case_id, so bulk-dismissing a promoted
+    alert left status="dismissed" against a live case link.
+    """
+    from app.models import Case, IOC, TimelineEvent, db
+
+    c = _client(app)
+    cid = _case(app)
+    ids = [_alert(app, status="new") for _ in range(2)]
+    c.post("/alerts/link", data={"alert_ids": [str(i) for i in ids], "case_id": str(cid)})
+    assert all(_status(app, i) == ("promoted", cid) for i in ids)
+
+    with app.app_context():
+        tl = TimelineEvent.query.filter_by(case_id=cid).count()
+        ioc = IOC.query.filter_by(case_id=cid).count()
+
+    c.post("/alerts/bulk-status",
+           data={"alert_ids": [str(i) for i in ids], "status": "new"})
+
+    for i in ids:
+        status, case_id = _status(app, i)
+        assert status == "new"
+        assert case_id is None, "bulk must clear case_id, not leave a dangling link"
+    with app.app_context():
+        assert db.session.get(Case, cid) is not None
+        assert TimelineEvent.query.filter_by(case_id=cid).count() == tl
+        assert IOC.query.filter_by(case_id=cid).count() == ioc
+
+
+def test_bulk_appends_the_reason_to_each_alert(app):
+    from app.models import Alert, db
+
+    c = _client(app)
+    ids = [_alert(app, status="new", notes=f"note {i}") for i in range(2)]
+    c.post("/alerts/bulk-status",
+           data={"alert_ids": [str(i) for i in ids], "status": "dismissed",
+                 "reason": "Duplicate", "notes": "same campaign"})
+    with app.app_context():
+        for k, i in enumerate(ids):
+            notes = db.session.get(Alert, i).notes
+            assert f"note {k}" in notes
+            assert "New → Dismissed: Duplicate | same campaign" in notes
+
+
+def test_bulk_audits_every_alert_it_moved(app):
+    from app.models import AuditLog, db
+
+    c = _client(app)
+    ids = [_alert(app, status="new") for _ in range(3)]
+    c.post("/alerts/bulk-status",
+           data={"alert_ids": [str(i) for i in ids], "status": "reviewing"})
+    with app.app_context():
+        for i in ids:
+            rows = AuditLog.query.filter_by(
+                entity_type="alert", entity_id=i, field_name="status").all()
+            assert [(r.old_value, r.new_value) for r in rows] == [("new", "reviewing")]
+
+
+@pytest.mark.parametrize("bad", ["promoted", "banana", ""])
+def test_bulk_refuses_targets_that_are_not_settable(app, bad):
+    c = _client(app)
+    aid = _alert(app, status="new")
+    c.post("/alerts/bulk-status", data={"alert_ids": [str(aid)], "status": bad})
+    assert _status(app, aid) == ("new", None)
+
+
+def test_bulk_with_nothing_selected_changes_nothing(app):
+    c = _client(app)
+    aid = _alert(app, status="new")
+    r = c.post("/alerts/bulk-status", data={"status": "dismissed"})
+    assert r.status_code == 302
+    assert _status(app, aid)[0] == "new"
+
+
+def test_bulk_rejects_non_numeric_ids(app):
+    c = _client(app)
+    r = c.post("/alerts/bulk-status", data={"alert_ids": ["abc"], "status": "dismissed"})
+    assert r.status_code == 400
+
+
+def test_a_viewer_cannot_bulk_move(app):
+    c = _client(app, role="viewer")
+    aid = _alert(app, status="new")
+    r = c.post("/alerts/bulk-status", data={"alert_ids": [str(aid)], "status": "dismissed"})
+    assert r.status_code == 403
+    assert _status(app, aid)[0] == "new"
+
+
+def test_the_old_one_way_bulk_dismiss_route_is_gone(app):
+    """
+    It had drifted from the single-alert path in three silent ways. One code
+    path now, so they cannot drift again.
+    """
+    assert not any(r.endpoint == "alerts.bulk_dismiss" for r in app.url_map.iter_rules())
