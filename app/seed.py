@@ -240,6 +240,56 @@ MITRE_DATA = {
 }
 
 DEFAULT_LOOKUP_VALUES = {
+    # What kind of thing an asset is. Kept short enough to stay a real choice —
+    # a vocabulary nobody can hold in their head gets "Other" every time, and an
+    # aggregate over "Other" answers nothing.
+    "asset_type": [
+        "Server",
+        "Workstation",
+        "Laptop",
+        "Mobile Device",
+        "Virtual Machine",
+        "Container / Pod",
+        "Domain Controller",
+        "Database",
+        "Web Application",
+        "SaaS Application",
+        "Cloud Resource",
+        "Network Device",
+        "Security Appliance",
+        "File Share / Storage",
+        "Backup System",
+        "User Account",
+        "Service Account",
+        "Mailbox",
+        "OT / IoT Device",
+        "Other",
+    ],
+    # Business criticality of the asset itself, independent of any one incident.
+    # NULL means not assessed — there is no "Unknown" value here on purpose, so
+    # that an unassessed asset cannot be mistaken for an assessed one.
+    "asset_criticality": [
+        "Critical",
+        "High",
+        "Moderate",
+        "Low",
+    ],
+    # What an asset was *in a particular case* — lives on the case_assets link,
+    # not on the asset. "Investigated - Not Affected" earns its place: recording
+    # that a box was checked and found clean is a finding, and without somewhere
+    # to put it that work disappears.
+    "asset_role": [
+        "Patient Zero",
+        "Initially Compromised",
+        "Lateral Movement Target",
+        "Credential Source",
+        "Data Source",
+        "Exfiltration Path",
+        "Command and Control",
+        "Impacted / Degraded",
+        "Investigated - Not Affected",
+        "Other",
+    ],
     "case_type": [
         "Ransomware",
         "Data Breach",
@@ -431,14 +481,35 @@ def seed_database(app):
         _backfill_id_counters(app)
         _backfill_timeline_lookups(app)
 
-        # Only seed if lookup_values table is empty
-        if LookupValue.query.count() == 0:
-            order = 0
-            for list_name, values in DEFAULT_LOOKUP_VALUES.items():
-                for value in values:
-                    db.session.add(LookupValue(list_name=list_name, value=value, display_order=order))
-                    order += 1
-            db.session.commit()
+        # Seed each list on its own, not the whole table at once.
+        #
+        # This was gated on LookupValue.query.count() == 0 — seed everything only
+        # if the table is empty — and that gate was broken by the line directly
+        # above it. _backfill_timeline_lookups() commits timeline_category and
+        # timeline_color first, so on a fresh install the table was never empty by
+        # the time this ran, and case_type, ioc_type and evidence_type were never
+        # seeded at all.
+        #
+        # Verified against an empty database before this change: a brand new
+        # deployment came up with only the two timeline lists, and empty Case Type,
+        # IOC Type and Evidence Type dropdowns. Any install older than the timeline
+        # work already had those values and so never saw it, which is why it sat
+        # here unnoticed.
+        #
+        # Per-list is also what every list added from here on needs, for exactly
+        # the reason _backfill_timeline_lookups() already documents. A list an
+        # admin has emptied on purpose will be re-seeded; that matches the
+        # behaviour of the timeline backfill and is the lesser of the two wrongs.
+        for list_name, values in DEFAULT_LOOKUP_VALUES.items():
+            if LookupValue.query.filter_by(list_name=list_name).count():
+                continue
+            # display_order restarts per list. It always should have — the column
+            # is only ever read within one list_name.
+            for order, value in enumerate(values):
+                db.session.add(
+                    LookupValue(list_name=list_name, value=value, display_order=order)
+                )
+        db.session.commit()
 
         # Create bootstrap admin if no users exist
         if User.query.count() == 0:

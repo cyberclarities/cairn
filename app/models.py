@@ -79,6 +79,15 @@ class Case(db.Model):
     # Ransomware / Data Breach / Phishing / BEC / Malware / Insider Threat /
     # DDoS / Unauthorized Access / Vulnerability Exploitation / Other
 
+    # Superseded by the Asset entity and the case_assets link, but deliberately
+    # retained and still written by the case form.
+    #
+    # The migration that introduced assets parsed every line of this column into
+    # linked Asset rows. It did not clear the column, because a parse of somebody
+    # else's free text is a guess, and the original strings are the only record of
+    # what an analyst actually typed. Keep it until the asset lists have been
+    # eyeballed against it on real cases; drop it in a later migration, not this
+    # one. Reads should prefer case.assets — see the assets property below.
     affected_systems = db.Column(db.Text)
     affected_users = db.Column(db.Text)
     estimated_impact = db.Column(db.Text)
@@ -147,6 +156,9 @@ class Case(db.Model):
     lessons_learned_notes = db.Column(db.Text, nullable=True)
 
     # Relationships
+    asset_links = db.relationship(
+        "CaseAsset", backref="case", lazy="dynamic", cascade="all, delete-orphan"
+    )
     iocs = db.relationship("IOC", backref="case", lazy="dynamic", cascade="all, delete-orphan")
     evidence_items = db.relationship("Evidence", backref="case", lazy="dynamic", cascade="all, delete-orphan")
     timeline_events = db.relationship("TimelineEvent", backref="case", lazy="dynamic", cascade="all, delete-orphan")
@@ -176,8 +188,130 @@ class Case(db.Model):
             "Closed": "secondary",
         }.get(self.status, "secondary")
 
+    @property
+    def assets(self):
+        """
+        Assets linked to this case, ordered by name.
+
+        Prefer this over parsing affected_systems. The text column is still
+        maintained for now (see the note on it) but it is a record of what was
+        typed, not a queryable set.
+        """
+        return [link.asset for link in
+                sorted(self.asset_links, key=lambda l: l.asset.name.lower())]
+
     def __repr__(self):
         return f"<Case {self.case_id}>"
+
+
+# ---------------------------------------------------------------------------
+# Asset
+# ---------------------------------------------------------------------------
+
+class Asset(db.Model):
+    """
+    A host, service, account, or device that incidents get recorded against.
+
+    Until this existed, affected systems were newline-separated free text on the
+    case (Case.affected_systems). That text is still there and still populated —
+    see the note on Case.affected_systems — but it could not answer the question
+    an incident console is asked most often after the first week: what else has
+    happened to this box? Every case held its own private copy of a hostname, so
+    nothing joined across them, nothing could be typed, and nothing could be
+    counted.
+
+    Assets outlive cases. Deleting a case removes its link rows, never the asset.
+    """
+
+    __tablename__ = "assets"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    # Display name, as an analyst would write it: a hostname, an FQDN, an IP, a
+    # service name, an account. Editable, because the first spelling to arrive is
+    # usually whatever an alert payload happened to contain.
+    name = db.Column(db.String(256), nullable=False)
+
+    # Case-insensitive, whitespace-collapsed dedupe key (see common.normalize_asset_name).
+    # Unique across the whole install: "DC01", "dc01" and "dc01 " are one asset,
+    # or the entity earns nothing over the free text it replaces.
+    #
+    # The tradeoff, stated so it is not rediscovered as a bug: two genuinely
+    # different machines that share a short name — prod and dev both called
+    # "web01" — collide. The answer is to qualify the name ("web01.corp.example"),
+    # which is why name is editable and why this key is derived rather than typed.
+    normalized_name = db.Column(db.String(256), unique=True, nullable=False, index=True)
+
+    # Both validated against lookup_values (asset_type, asset_criticality).
+    #
+    # NULL is meaningful and is the honest default: nobody has classified this
+    # yet. The backfill migration deliberately does not guess a type from the
+    # string — an asset labelled "Server" because its name contained "srv" is
+    # worse than one labelled nothing, because the first looks like a decision
+    # somebody made. Unclassified assets are surfaced in the UI for triage.
+    asset_type = db.Column(db.String(64), nullable=True, index=True)
+    criticality = db.Column(db.String(32), nullable=True)
+
+    owner = db.Column(db.String(256), nullable=True)
+    location = db.Column(db.String(256), nullable=True)
+    description = db.Column(db.Text, nullable=True)
+
+    # Retired rather than deleted — an asset referenced by a closed case must
+    # stay resolvable for that case's report to keep meaning anything.
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
+
+    created_at = db.Column(db.DateTime, default=utcnow)
+    updated_at = db.Column(db.DateTime, default=utcnow, onupdate=utcnow)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    created_by = db.relationship("User", foreign_keys=[created_by_id])
+
+    case_links = db.relationship(
+        "CaseAsset", backref="asset", lazy="dynamic", cascade="all, delete-orphan"
+    )
+
+    @property
+    def type_label(self):
+        """Display form. NULL reads as Unclassified, not as blank."""
+        return self.asset_type or "Unclassified"
+
+    def __repr__(self):
+        return f"<Asset {self.name}>"
+
+
+class CaseAsset(db.Model):
+    """
+    Join row between a case and an asset, carrying what that asset was *to* that
+    case — the part that is per-incident and does not belong on the asset itself.
+
+    ondelete CASCADE on both sides: deleting a case drops its links, deleting an
+    asset drops its links, and neither reaches through to the other record.
+    """
+
+    __tablename__ = "case_assets"
+    __table_args__ = (
+        db.UniqueConstraint("case_id", "asset_id", name="uq_case_assets_case_asset"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    case_id = db.Column(
+        db.Integer, db.ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    asset_id = db.Column(
+        db.Integer, db.ForeignKey("assets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    # Validated against lookup_values (asset_role). What this asset was in this
+    # incident — patient zero, lateral target, exfiltration source. Nullable:
+    # role is usually not known when the asset is first attached.
+    role = db.Column(db.String(64), nullable=True)
+    notes = db.Column(db.Text, nullable=True)
+
+    added_at = db.Column(db.DateTime, default=utcnow)
+    added_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    added_by = db.relationship("User", foreign_keys=[added_by_id])
+
+    def __repr__(self):
+        return f"<CaseAsset case={self.case_id} asset={self.asset_id}>"
 
 
 # ---------------------------------------------------------------------------

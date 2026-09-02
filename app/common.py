@@ -165,6 +165,20 @@ def parse_affected_systems(text):
     return result
 
 
+def normalize_asset_name(name):
+    """
+    Dedupe key for Asset.normalized_name — case-folded, whitespace-collapsed.
+
+    Deliberately not clever. It does not strip the trailing dot off an FQDN, does
+    not lowercase only the domain half, does not treat an address and its PTR
+    record as the same host, and does not strip a domain suffix to match a short
+    name. Every one of those merges two strings an analyst wrote differently, and
+    an incident console that silently merges two hosts is worse than one that
+    shows a duplicate somebody can merge deliberately.
+    """
+    return " ".join((name or "").split()).casefold()
+
+
 def format_datetime_in_zone(dt_utc, tz_name):
     """
     Render a stored UTC datetime as (date_str, time_str) in *tz_name*, for
