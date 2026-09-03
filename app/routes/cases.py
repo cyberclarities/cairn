@@ -10,9 +10,11 @@ from app.common import (
     parse_datetime, parse_int,
 )
 from app.decorators import analyst_required
-from app.models import db, Case, User, CaseStatusHistory, LookupValue, TIMELINE_COLORS
+from app.models import (
+    db, Case, User, CaseStatusHistory, IOCEnrichment, LookupValue, TIMELINE_COLORS,
+)
 from app.seed import MITRE_DATA
-from app.services import report_builder
+from app.services import report_builder, threat_intel
 
 cases_bp = Blueprint("cases", __name__, url_prefix="/cases")
 
@@ -157,6 +159,33 @@ def detail(case_id_int):
         key=str.lower,
     )
 
+    # Threat-intel enrichment: which providers are actually usable in this
+    # deployment, and what each IOC already has. Computed here rather than in
+    # the template so the page does not run a query per row.
+    #
+    # ti_by_ioc holds only what has been looked up. An indicator with no rows
+    # has simply never been sent anywhere, which is the default state and the
+    # right one — nothing enriches on its own.
+    ti_providers = {
+        slug: {"label": p.label, "notes": p.notes, "docs_url": p.docs_url}
+        for slug, p in threat_intel.PROVIDERS.items()
+    }
+    ti_available = {
+        ioc_type: [p.slug for p in threat_intel.providers_for(ioc_type, current_app.config)]
+        for ioc_type in threat_intel.SUPPORTED_TYPES
+    }
+    ti_any_configured = any(ti_available.values())
+    ti_by_ioc = {}
+    if iocs:
+        rows = (
+            IOCEnrichment.query
+            .filter(IOCEnrichment.ioc_id.in_([i.id for i in iocs]))
+            .order_by(IOCEnrichment.provider.asc())
+            .all()
+        )
+        for row in rows:
+            ti_by_ioc.setdefault(row.ioc_id, []).append(row)
+
     # Report tab: IMP severity classification is computed, never stored —
     # it's derived fresh from the two impact axes every time so it can never
     # go stale relative to them. See app/services/report_builder.py.
@@ -195,6 +224,11 @@ def detail(case_id_int):
     return render_template(
         "cases/detail.html",
         case=case,
+        ti_providers=ti_providers,
+        ti_available=ti_available,
+        ti_any_configured=ti_any_configured,
+        ti_by_ioc=ti_by_ioc,
+        ti_batch_max=threat_intel.BATCH_MAX,
         asset_links=asset_links,
         asset_types=asset_types,
         asset_roles=asset_roles,

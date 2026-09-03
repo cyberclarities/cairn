@@ -213,12 +213,106 @@ def build_report_data(case):
             "mitre": mitre,
         })
 
+    # Third-party intelligence, if any was requested. Two things come out of it
+    # and they are deliberately kept apart.
+    #
+    # The IOC table gets a short "intel" cell — what the providers said, so a
+    # reader following the indicator list is not sent hunting for it.
+    #
+    # The disclosure register is the other half, and it is the half that matters
+    # to counsel. Every lookup told somebody outside the organisation that this
+    # incident was being worked, and on a hash, that the sample was held. A
+    # report that carries the answers without carrying the questions is not a
+    # complete record of what the response did.
+    def _enrichment_rows(ioc):
+        """
+        IOC.enrichments is a dynamic relationship on a live object and a plain
+        list on a stand-in. Sort here rather than in SQL so both behave the
+        same and the report is deterministic either way.
+        """
+        rows = getattr(ioc, "enrichments", None) or []
+        if hasattr(rows, "all"):
+            rows = rows.all()
+        return sorted(rows, key=lambda r: r.provider)
+
+    enrichments_by_ioc = {}
+    for idx, i in enumerate(iocs):
+        rows = _enrichment_rows(i)
+        if rows:
+            enrichments_by_ioc[idx] = rows
+
+    def _intel_cell(idx):
+        rows = enrichments_by_ioc.get(idx)
+        if not rows:
+            return "Not looked up"
+        answered = [r for r in rows if r.status == "ok"]
+        if not answered:
+            if any(r.status == "skipped" for r in rows):
+                return "Not sent (internal address)"
+            return "No provider answered"
+        return "; ".join(
+            f"{r.provider}: {r.verdict}" + (f" ({r.score})" if r.score is not None else "")
+            for r in answered
+        )
+
     ioc_rows = [{
         "type": i.ioc_type,
         "value": i.value,
         "description": i.description or "—",
         "confidence": i.confidence or "—",
-    } for i in iocs]
+        "intel": _intel_cell(idx),
+    } for idx, i in enumerate(iocs)]
+
+    disclosure_rows = []
+    for idx, i in enumerate(iocs):
+        for r in enrichments_by_ioc.get(idx, []):
+            if r.status == "unsupported":
+                continue
+            if r.status == "skipped":
+                outcome = "Not sent — refused by the disclosure guard"
+            elif r.status == "error":
+                outcome = f"Sent; no answer ({r.error or 'error'})"
+            else:
+                outcome = f"Sent; {r.verdict or 'no verdict'}"
+            disclosure_rows.append({
+                "indicator": i.value,
+                "type": i.ioc_type or "—",
+                "provider": r.provider,
+                "outcome": outcome,
+                "when": _fmt_dt(r.queried_at),
+                "by": (r.queried_by.name if r.queried_by else "—"),
+            })
+
+    sent_count = sum(1 for d in disclosure_rows if d["outcome"].startswith("Sent"))
+    withheld_count = len(disclosure_rows) - sent_count
+    if not disclosure_rows:
+        disclosure_statement = (
+            "No indicator from this case was submitted to a third-party "
+            "intelligence provider."
+        )
+    else:
+        providers_used = sorted({d["provider"] for d in disclosure_rows
+                                 if d["outcome"].startswith("Sent")})
+        bits = []
+        if sent_count:
+            bits.append(
+                f"{sent_count} lookup(s) were sent to {len(providers_used)} "
+                f"provider(s): {', '.join(providers_used)}."
+            )
+        if withheld_count:
+            bits.append(
+                f"{withheld_count} were withheld — the indicator resolved to "
+                f"internal address space and was not disclosed."
+            )
+        bits.append(
+            "No file was uploaded and no URL was submitted for scanning; "
+            "indicators were looked up against what each provider already held."
+        )
+        bits.append(
+            "A provider verdict is what one source said on the date shown. It is "
+            "corroboration, not a finding of this investigation."
+        )
+        disclosure_statement = " ".join(bits)
 
     # Hashes are carried in full, not as a prefix. A 12-character stub reads
     # fine on screen but cannot be verified against anything, and this report
@@ -432,6 +526,8 @@ def build_report_data(case):
         "timeline": timeline,
 
         "iocs": ioc_rows,
+        "disclosures": disclosure_rows,
+        "disclosure_statement": disclosure_statement,
         "assets": asset_rows,
         "asset_scope": asset_scope,
         "response_metrics": response_metrics,
@@ -575,14 +671,28 @@ def render_markdown(data: dict) -> str:
     a("## Indicators of Compromise")
     a("")
     if data["iocs"]:
-        a("| Type | Value | Description | Confidence |")
-        a("|---|---|---|---|")
+        a("| Type | Value | Description | Confidence | Third-party intel |")
+        a("|---|---|---|---|---|")
         for i in data["iocs"]:
             a(f"| {_md_cell(i['type'])} | {_md_cell(i['value'])} | "
-              f"{_md_cell(i['description'])} | {_md_cell(i['confidence'])} |")
+              f"{_md_cell(i['description'])} | {_md_cell(i['confidence'])} | "
+              f"{_md_cell(i['intel'])} |")
     else:
         a("No IOCs recorded.")
     a("")
+
+    a("### Third-Party Intelligence Disclosures")
+    a("")
+    a(data["disclosure_statement"])
+    a("")
+    if data["disclosures"]:
+        a("| Indicator | Type | Provider | Outcome | When (UTC) | Requested by |")
+        a("|---|---|---|---|---|---|")
+        for d in data["disclosures"]:
+            a(f"| {_md_cell(d['indicator'])} | {_md_cell(d['type'])} | "
+              f"{_md_cell(d['provider'])} | {_md_cell(d['outcome'])} | "
+              f"{_md_cell(d['when'])} | {_md_cell(d['by'])} |")
+        a("")
 
     a("## Evidence Collected")
     a("")
@@ -927,12 +1037,24 @@ def render_docx(data: dict) -> io.BytesIO:
     add_heading("Indicators of Compromise")
     if data["iocs"]:
         add_table(
-            ["Type", "Value", "Description", "Confidence"],
-            [[i["type"], i["value"], i["description"], i["confidence"]] for i in data["iocs"]],
-            widths=[Inches(1.0), Inches(2.2), Inches(2.9), Inches(0.9)],
+            ["Type", "Value", "Description", "Confidence", "Third-party intel"],
+            [[i["type"], i["value"], i["description"], i["confidence"], i["intel"]]
+             for i in data["iocs"]],
+            widths=[Inches(0.9), Inches(1.8), Inches(2.0), Inches(0.8), Inches(1.5)],
         )
     else:
         add_para("No IOCs recorded.", italic=True, color=GREY)
+
+    add_para("Third-Party Intelligence Disclosures", bold=True, size=9.5)
+    add_para(data["disclosure_statement"], size=9)
+    if data["disclosures"]:
+        add_table(
+            ["Indicator", "Type", "Provider", "Outcome", "When (UTC)", "Requested by"],
+            [[d["indicator"], d["type"], d["provider"], d["outcome"], d["when"], d["by"]]
+             for d in data["disclosures"]],
+            widths=[Inches(1.6), Inches(0.9), Inches(0.9), Inches(1.7),
+                    Inches(1.1), Inches(0.8)],
+        )
 
     add_heading("Evidence Collected")
     if data["evidence"]:

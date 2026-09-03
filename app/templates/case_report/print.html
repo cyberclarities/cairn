@@ -169,13 +169,24 @@
 <h2>Indicators of Compromise</h2>
 {% if data.iocs %}
 <table class="data-table">
-  <tr><th>Type</th><th>Value</th><th>Description</th><th>Confidence</th></tr>
+  <tr><th>Type</th><th>Value</th><th>Description</th><th>Confidence</th><th>Third-party intel</th></tr>
   {% for i in data.iocs %}
-  <tr><td>{{ i.type }}</td><td>{{ i.value }}</td><td>{{ i.description }}</td><td>{{ i.confidence }}</td></tr>
+  <tr><td>{{ i.type }}</td><td>{{ i.value }}</td><td>{{ i.description }}</td><td>{{ i.confidence }}</td><td>{{ i.intel }}</td></tr>
   {% endfor %}
 </table>
 {% else %}
 <p class="placeholder">No IOCs recorded.</p>
+{% endif %}
+
+<h3>Third-Party Intelligence Disclosures</h3>
+<p>{{ data.disclosure_statement }}</p>
+{% if data.disclosures %}
+<table class="data-table">
+  <tr><th>Indicator</th><th>Type</th><th>Provider</th><th>Outcome</th><th>When (UTC)</th><th>Requested by</th></tr>
+  {% for d in data.disclosures %}
+  <tr><td>{{ d.indicator }}</td><td>{{ d.type }}</td><td>{{ d.provider }}</td><td>{{ d.outcome }}</td><td>{{ d.when }}</td><td>{{ d.by }}</td></tr>
+  {% endfor %}
+</table>
 {% endif %}
 
 <h2>Evidence Collected</h2>

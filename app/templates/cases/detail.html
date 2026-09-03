@@ -282,15 +282,44 @@
     {% endif %}
 
     {% if iocs %}
+    {% if current_user.is_analyst and ti_any_configured %}
+    <div class="alert alert-warning py-2 small mb-3">
+      <strong>Looking one up sends it outside this deployment.</strong>
+      A lookup tells the provider you are interested in that indicator — and for a
+      file hash, that you hold the sample. On targeted activity that can reach the
+      actor. Nothing is uploaded and nothing is submitted for scanning; private and
+      reserved addresses are refused before a request is built. Every attempt is
+      written to the case audit log.
+    </div>
+    {% endif %}
+
+    <form method="POST" action="{{ url_for('iocs.enrich_selected', case_id_int=case.id) }}"
+          id="iocEnrichForm">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="table-responsive">
-      <table class="table table-sm table-hover">
+      <table class="table table-sm table-hover align-middle">
         <thead><tr>
-          <th>Type</th><th>Value</th><th>Confidence</th><th>Status</th><th>Source</th><th>First Seen</th><th>Last Seen</th>
+          {% if current_user.is_analyst and ti_any_configured %}
+          <th style="width:1%"><input type="checkbox" class="form-check-input" id="iocSelectAll"
+                                      title="Select all"></th>
+          {% endif %}
+          <th>Type</th><th>Value</th><th>Confidence</th><th>Status</th><th>Source</th>
+          <th>First Seen</th><th>Last Seen</th>
+          {% if ti_any_configured %}<th>Intel</th>{% endif %}
           {% if current_user.is_analyst %}<th></th>{% endif %}
         </tr></thead>
         <tbody>
         {% for ioc in iocs %}
+        {% set rows = ti_by_ioc.get(ioc.id, []) %}
+        {% set can_enrich = ioc.ioc_type and ti_available.get(ioc.ioc_type) %}
         <tr>
+          {% if current_user.is_analyst and ti_any_configured %}
+          <td>
+            {% if can_enrich %}
+            <input type="checkbox" class="form-check-input ioc-select" name="ioc_id" value="{{ ioc.id }}">
+            {% endif %}
+          </td>
+          {% endif %}
           <td><span class="badge bg-secondary">{{ ioc.ioc_type }}</span></td>
           <td><code>{{ ioc.value }}</code></td>
           <td><span class="badge bg-{{ ioc.confidence_color }}">{{ ioc.confidence }}</span></td>
@@ -301,24 +330,128 @@
           <td class="small text-muted">{{ ioc.source or '—' }}</td>
           <td class="small text-muted">{{ ioc.first_seen.strftime('%Y-%m-%d') if ioc.first_seen else '—' }}</td>
           <td class="small text-muted">{{ ioc.last_seen.strftime('%Y-%m-%d') if ioc.last_seen else '—' }}</td>
+
+          {% if ti_any_configured %}
+          <td class="small">
+            {% if rows %}
+              {% for r in rows %}
+                {% if r.status == 'ok' %}
+                  <span class="badge bg-{{ r.verdict_color }}">{{ r.provider }}: {{ r.verdict }}</span>
+                {% elif r.status == 'skipped' %}
+                  <span class="badge bg-light text-dark border">{{ r.provider }}: not sent</span>
+                {% elif r.status == 'error' %}
+                  <span class="badge bg-secondary">{{ r.provider }}: error</span>
+                {% endif %}
+              {% endfor %}
+              <button class="btn btn-link btn-sm p-0 ms-1 align-baseline" type="button"
+                      data-bs-toggle="collapse" data-bs-target="#ti-{{ ioc.id }}">
+                details
+              </button>
+            {% elif can_enrich %}
+              <span class="text-muted">not looked up</span>
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+          {% endif %}
+
           {% if current_user.is_analyst %}
-          <td class="text-end">
-            <button class="btn btn-xs btn-sm btn-outline-secondary py-0 px-2"
+          <td class="text-end text-nowrap">
+            {% if can_enrich %}
+            <button class="btn btn-xs btn-sm btn-outline-primary py-0 px-2"
+                    type="submit" form="iocRowForm"
+                    formaction="{{ url_for('iocs.enrich_ioc', case_id_int=case.id, ioc_id=ioc.id) }}"
+                    title="Look this indicator up with the configured providers">
+              <i class="bi bi-search"></i>
+            </button>
+            {% endif %}
+            <button class="btn btn-xs btn-sm btn-outline-secondary py-0 px-2" type="button"
                     onclick="openEditIoc({{ ioc.id }},'{{ ioc.ioc_type }}','{{ ioc.value|e }}','{{ ioc.confidence }}','{{ ioc.status }}','{{ ioc.source|default('')|e }}','{{ ioc.notes|default('')|e }}')">
               <i class="bi bi-pencil"></i>
             </button>
-            <form method="POST" action="{{ url_for('iocs.delete_ioc', case_id_int=case.id, ioc_id=ioc.id) }}"
-                  class="d-inline" onsubmit="return confirm('Delete this IOC?')">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-              <button class="btn btn-xs btn-sm btn-outline-danger py-0 px-2"><i class="bi bi-trash"></i></button>
-            </form>
+            <button class="btn btn-xs btn-sm btn-outline-danger py-0 px-2"
+                    type="submit" form="iocRowForm"
+                    formaction="{{ url_for('iocs.delete_ioc', case_id_int=case.id, ioc_id=ioc.id) }}"
+                    onclick="return confirm('Delete this IOC?')"><i class="bi bi-trash"></i></button>
           </td>
           {% endif %}
         </tr>
+
+        {% if rows %}
+        <tr class="collapse" id="ti-{{ ioc.id }}">
+          <td colspan="12" class="bg-body-tertiary small">
+            <div class="ps-2 py-1">
+              {% for r in rows %}
+              <div class="mb-2">
+                <strong>{{ ti_providers.get(r.provider, {}).get('label', r.provider) }}</strong>
+                {% if r.status == 'ok' %}
+                  <span class="badge bg-{{ r.verdict_color }}">{{ r.verdict }}</span>
+                  {% if r.score is not none %}<span class="text-muted">score {{ r.score }}</span>{% endif %}
+                {% elif r.status == 'skipped' %}
+                  <span class="badge bg-light text-dark border">not sent</span>
+                {% elif r.status == 'error' %}
+                  <span class="badge bg-secondary">error</span>
+                {% endif %}
+                <div class="text-muted">{{ r.error or r.summary or '—' }}</div>
+                <div class="text-muted">
+                  {{ r.queried_at.strftime('%Y-%m-%d %H:%M') if r.queried_at }} UTC
+                  {% if r.queried_by %} · {{ r.queried_by.full_name or r.queried_by.username }}{% endif %}
+                  {% if r.permalink %}
+                    · <a href="{{ r.permalink }}" target="_blank" rel="noopener noreferrer">open at provider</a>
+                  {% endif %}
+                </div>
+              </div>
+              {% endfor %}
+              <div class="text-muted fst-italic">
+                A verdict is what one provider said on the date shown, not a finding.
+                Corroborate before it goes in the report.
+              </div>
+            </div>
+          </td>
+        </tr>
+        {% endif %}
         {% endfor %}
         </tbody>
       </table>
     </div>
+
+    {% if current_user.is_analyst and ti_any_configured %}
+    <button class="btn btn-sm btn-outline-primary" type="submit">
+      <i class="bi bi-search"></i> Look Up Selected
+    </button>
+    <span class="text-muted small ms-2">
+      Up to {{ ti_batch_max }} at a time. Re-running a provider replaces its previous answer.
+    </span>
+    {% endif %}
+    </form>
+
+    {% if current_user.is_analyst %}
+    <!-- Target for the per-row enrich and delete buttons. Carries the CSRF
+         token and nothing else; each button supplies its own formaction. -->
+    <form method="POST" id="iocRowForm" class="d-none">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    </form>
+    <script>
+      (function () {
+        var all = document.getElementById('iocSelectAll');
+        if (!all) return;
+        all.addEventListener('change', function () {
+          document.querySelectorAll('.ioc-select').forEach(function (cb) {
+            cb.checked = all.checked;
+          });
+        });
+      })();
+    </script>
+    {% endif %}
+
+    {% if current_user.is_analyst and not ti_any_configured %}
+    <p class="text-muted small mt-3">
+      No intelligence provider is configured. Add an API key to the environment
+      (see the TI_ keys in <code>.env.example</code>) to enable lookups. GreyNoise,
+      urlscan.io and CIRCL hashlookup answer without one.
+    </p>
+    {% endif %}
+
     {% else %}
     <p class="text-muted small">No IOCs recorded yet.</p>
     {% endif %}

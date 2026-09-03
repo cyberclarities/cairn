@@ -93,7 +93,46 @@ def make_case(**overrides):
                 value="login-" + "x" * 200 + ".example.invalid",
                 description=LONG_TEXT,
                 confidence="High",
-            )
+                # Two providers were asked, one answered. The report has to
+                # carry both — the answer and the fact that the question was
+                # asked at all.
+                enrichments=[
+                    Obj(provider="virustotal", status="ok", verdict="malicious",
+                        score=41, summary="12 malicious, 2 suspicious of 76 engines.",
+                        error=None,
+                        queried_at=datetime(2026, 2, 5, 9, 30),
+                        queried_by=Obj(name="J. Analyst")),
+                    Obj(provider="urlscan", status="error", verdict=None,
+                        score=None, summary=None,
+                        error="Rate limit reached (429). Try again later.",
+                        queried_at=datetime(2026, 2, 5, 9, 30),
+                        queried_by=Obj(name="J. Analyst")),
+                ],
+            ),
+            Obj(
+                ioc_type="IP Address",
+                value="10.20.30.40",
+                description="Internal jump host reached from the compromised account.",
+                confidence="High",
+                # Refused by the disclosure guard. The report says so, because
+                # "no result" and "we declined to tell anyone" are different
+                # statements and only one of them is true here.
+                enrichments=[
+                    Obj(provider="abuseipdb", status="skipped", verdict=None,
+                        score=None,
+                        summary="10.20.30.40 is a private address. It was not sent.",
+                        error=None,
+                        queried_at=datetime(2026, 2, 5, 9, 31),
+                        queried_by=Obj(name="J. Analyst")),
+                ],
+            ),
+            Obj(
+                ioc_type="File Hash SHA256",
+                value=SHA256,
+                description="Dropper recovered from the mailbox export.",
+                confidence="Medium",
+                enrichments=[],
+            ),
         ],
         evidence_items=[
             Obj(
@@ -474,3 +513,90 @@ def test_unattributed_audit_entries_do_not_become_a_contributor():
     """A restore writes an entry with no user. It must not appear as a person."""
     data = rb.build_report_data(make_case())
     assert all(c["name"] not in (None, "None", "") for c in data["contributors"])
+
+
+# ---------------------------------------------------------------------------
+# Third-party intelligence disclosures
+# ---------------------------------------------------------------------------
+#
+# The AAR carries two separate things about enrichment, and conflating them
+# would be the failure worth catching. The IOC table carries what a provider
+# said. The disclosure register carries the fact that CAIRN told an outside
+# party this incident was being worked — which is the part counsel reads, and
+# the part that is true whether or not an answer came back.
+
+@pytest.mark.parametrize("fmt", ["docx", "markdown"])
+def test_provider_verdict_reaches_the_ioc_table(rendered, fmt):
+    assert "virustotal: malicious" in rendered[fmt]
+
+
+@pytest.mark.parametrize("fmt", ["docx", "markdown"])
+def test_an_ioc_never_looked_up_says_so(rendered, fmt):
+    """
+    Silence in the intel column would read as "clean". The row has to say the
+    question was never asked.
+    """
+    assert "Not looked up" in rendered[fmt]
+
+
+@pytest.mark.parametrize("fmt", ["docx", "markdown"])
+def test_withheld_indicator_is_reported_as_withheld_not_as_no_result(rendered, fmt):
+    text = rendered[fmt]
+    assert "Not sent — refused by the disclosure guard" in text
+    assert "were withheld" in text
+
+
+@pytest.mark.parametrize("fmt", ["docx", "markdown"])
+def test_a_failed_lookup_is_still_a_disclosure(rendered, fmt):
+    """
+    urlscan was rate-limited and returned nothing. The indicator still left the
+    building, so it still belongs in the register.
+    """
+    text = rendered[fmt]
+    assert "urlscan" in text
+    assert "no answer" in text
+
+
+@pytest.mark.parametrize("fmt", ["docx", "markdown"])
+def test_disclosure_register_names_who_asked_and_when(rendered, fmt):
+    text = rendered[fmt]
+    assert "2026-02-05 09:30" in text
+    assert "J. Analyst" in text
+
+
+@pytest.mark.parametrize("fmt", ["docx", "markdown"])
+def test_report_states_that_nothing_was_uploaded(rendered, fmt):
+    """
+    A reader who sees "sent to VirusTotal" beside a file hash will ask whether
+    the sample was uploaded. The report answers it without being asked.
+    """
+    text = rendered[fmt]
+    assert "No file was uploaded" in text
+    assert "no URL was submitted for scanning" in text
+
+
+@pytest.mark.parametrize("fmt", ["docx", "markdown"])
+def test_report_does_not_present_a_provider_verdict_as_a_finding(rendered, fmt):
+    assert "corroboration, not a finding of this investigation" in rendered[fmt]
+
+
+@pytest.mark.parametrize("fmt", ["docx", "markdown"])
+def test_a_case_with_no_lookups_says_so_plainly(fmt):
+    """
+    The absence of enrichment is itself a statement in the report, not a blank.
+    An examiner reading a missing section cannot tell whether nothing was sent
+    or whether the section was dropped.
+    """
+    case = make_case(iocs=[
+        Obj(ioc_type="Domain", value="example.invalid", description="—",
+            confidence="Low", enrichments=[]),
+    ])
+    text = render(fmt, case)
+    assert "No indicator from this case was submitted to a third-party" in text
+
+
+def test_disclosure_rows_carry_one_entry_per_lookup(data):
+    """One row per (indicator, provider) that was actually attempted."""
+    pairs = {(d["indicator"], d["provider"]) for d in data["disclosures"]}
+    assert ("10.20.30.40", "abuseipdb") in pairs
+    assert len(data["disclosures"]) == 3

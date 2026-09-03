@@ -173,6 +173,30 @@ class Config:
     # on (source, external_id), so overlap is cheap and gaps are not.
     POLL_OVERLAP_SECONDS = int(os.environ.get("POLL_OVERLAP_SECONDS", 120))
 
+    # ── Threat-intelligence lookups (all optional) ────────────────────────
+    # Every provider below is off until its key is present, and a provider that
+    # is off is simply absent from the analyst's list rather than a row of
+    # errors. Nothing here polls and nothing runs on the scheduler: a lookup
+    # happens when a person asks for one, on the indicators they selected.
+    #
+    # Know what a lookup costs before you turn one on. Asking a provider about
+    # an indicator tells that provider you are interested in it — and for a file
+    # hash, that you are holding the sample. Against targeted activity that
+    # disclosure can reach the actor. CAIRN never uploads a file and never
+    # submits a URL for scanning; hashes and URLs are looked up against what the
+    # provider already holds. Private, reserved and internal addresses are
+    # refused before any request is built. See app/services/threat_intel.py.
+    #
+    # Two of these work without a key. GreyNoise's community endpoint and
+    # urlscan.io's search answer unauthenticated, at a lower rate limit; a key
+    # raises the limit. CIRCL hashlookup takes no key at all.
+    TI_VIRUSTOTAL_KEY = os.environ.get("TI_VIRUSTOTAL_KEY", "")
+    TI_ABUSEIPDB_KEY = os.environ.get("TI_ABUSEIPDB_KEY", "")
+    TI_CRIMINALIP_KEY = os.environ.get("TI_CRIMINALIP_KEY", "")
+    TI_GREYNOISE_KEY = os.environ.get("TI_GREYNOISE_KEY", "")
+    TI_URLSCAN_KEY = os.environ.get("TI_URLSCAN_KEY", "")
+    TI_OTX_KEY = os.environ.get("TI_OTX_KEY", "")
+
     # Failed-login lockout
     LOGIN_MAX_ATTEMPTS = int(os.environ.get("LOGIN_MAX_ATTEMPTS", 5))
     LOGIN_LOCKOUT_MINUTES = int(os.environ.get("LOGIN_LOCKOUT_MINUTES", 15))

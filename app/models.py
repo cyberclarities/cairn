@@ -204,6 +204,81 @@ class Case(db.Model):
         return f"<Case {self.case_id}>"
 
 
+class IOCEnrichment(db.Model):
+    """
+    One lookup of one indicator against one third-party intelligence provider.
+
+    Every row here is a record that CAIRN disclosed an indicator to somebody
+    outside this deployment. That framing is deliberate and it is why the row
+    keeps who asked and when alongside what came back: the reply is the useful
+    part, but the query is the part with consequences. Asking VirusTotal about a
+    hash tells VirusTotal you hold that sample.
+
+    Both the normalised verdict and the provider's raw response are kept. The
+    normalised fields are what the UI and the AAR read; the raw payload is what
+    answers "what exactly did they say on the 3rd" months later, when the
+    provider's own verdict has moved on and the report has to stand on what was
+    known at the time.
+    """
+
+    __tablename__ = "ioc_enrichments"
+    __table_args__ = (
+        db.UniqueConstraint("ioc_id", "provider", name="uq_ioc_enrichment_provider"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    ioc_id = db.Column(
+        db.Integer, db.ForeignKey("iocs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    # Provider slug, e.g. "virustotal". Matches the registry key in
+    # services/threat_intel.py.
+    provider = db.Column(db.String(32), nullable=False, index=True)
+
+    # ok | error | unsupported | skipped
+    #
+    # "skipped" is its own outcome, not an error: a private address deliberately
+    # never left the building. Recording it as a failure would suggest the lookup
+    # was attempted and went wrong, which is the opposite of what happened.
+    status = db.Column(db.String(16), nullable=False, default="ok")
+
+    # Normalised across providers so one column can be sorted and reported on:
+    # malicious | suspicious | benign | unknown
+    verdict = db.Column(db.String(16), nullable=True, index=True)
+
+    # 0-100 where the provider gives something scoreable. NULL where it does not,
+    # rather than a zero that would read as "scored clean".
+    score = db.Column(db.Integer, nullable=True)
+
+    # One line an analyst can read without opening the raw payload.
+    summary = db.Column(db.String(512), nullable=True)
+
+    # Deep link into the provider's own UI for the indicator.
+    permalink = db.Column(db.String(1024), nullable=True)
+
+    # The provider's response verbatim, as JSON text.
+    raw_response = db.Column(db.Text, nullable=True)
+
+    # Populated when status is error — the reason, for an analyst who needs to
+    # know whether to retry or to stop relying on this provider.
+    error = db.Column(db.Text, nullable=True)
+
+    queried_at = db.Column(db.DateTime, default=utcnow, index=True)
+    queried_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
+    queried_by = db.relationship("User", foreign_keys=[queried_by_id])
+
+    @property
+    def verdict_color(self):
+        return {
+            "malicious": "danger",
+            "suspicious": "warning",
+            "benign": "success",
+        }.get(self.verdict, "secondary")
+
+    def __repr__(self):
+        return f"<IOCEnrichment {self.provider} ioc={self.ioc_id} {self.verdict}>"
+
+
 # ---------------------------------------------------------------------------
 # Asset
 # ---------------------------------------------------------------------------
@@ -341,6 +416,11 @@ class IOC(db.Model):
     created_at = db.Column(db.DateTime, default=utcnow)
     created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     created_by = db.relationship("User")
+
+    enrichments = db.relationship(
+        "IOCEnrichment", backref="ioc", lazy="dynamic",
+        cascade="all, delete-orphan",
+    )
 
     @property
     def confidence_color(self):
