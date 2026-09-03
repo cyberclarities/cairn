@@ -1,7 +1,9 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, abort, current_app
 from flask_login import login_required, current_user
 
-from app.common import choice, log_change, log_event, parse_datetime
+from app.common import (
+    choice, detect_ioc_type, log_change, log_event, parse_datetime, parse_ioc_block,
+)
 from app.decorators import analyst_required
 from app.models import db, Case, IOC, LookupValue
 
@@ -112,6 +114,151 @@ def add_ioc(case_id_int):
 
     db.session.commit()
     flash(f"IOC added: {ioc.value}", "success")
+    return redirect(url_for("cases.detail", case_id_int=case.id) + "#iocs")
+
+
+# ---------------------------------------------------------------------------
+# Bulk entry — paste a block of indicators, review what was detected, then save
+# ---------------------------------------------------------------------------
+
+def _active_ioc_types():
+    return [
+        lv.value for lv in LookupValue.query
+        .filter_by(list_name="ioc_type", is_active=True)
+        .order_by(LookupValue.display_order).all()
+    ]
+
+
+@iocs_bp.route("/<int:case_id_int>/iocs/bulk/preview", methods=["POST"])
+@login_required
+@analyst_required
+def bulk_preview(case_id_int):
+    """
+    Parse a pasted block and show what CAIRN made of it, before anything is saved.
+
+    The review step exists because detection can decline. A line CAIRN does not
+    recognise falls back to the type the analyst picked, and that fallback should
+    be visible and correctable while it is still a proposal — not discovered
+    afterwards as a row of indicators filed under the wrong type.
+
+    Detection runs here and only here. The preview does not re-implement it in
+    JavaScript, because two copies of a rule is how the two stop agreeing.
+    """
+    case = db.get_or_404(Case, case_id_int)
+    f = request.form
+
+    ioc_types = _active_ioc_types()
+    fallback = choice(f.get("fallback_type"), ioc_types,
+                      default=ioc_types[0] if ioc_types else None)
+
+    values = parse_ioc_block(f.get("block", ""))
+    if not values:
+        flash("Nothing to add — no indicator values found in that block.", "warning")
+        return redirect(url_for("cases.detail", case_id_int=case.id) + "#iocs")
+
+    existing = {i.value.strip().lower(): i for i in case.iocs}
+
+    rows = []
+    for v in values:
+        detected = detect_ioc_type(v)
+        dupe = existing.get(v.strip().lower())
+        rows.append({
+            "value": v,
+            "ioc_type": detected or fallback,
+            "detected": detected,          # None means it fell back
+            "duplicate_of": dupe.ioc_type if dupe else None,
+        })
+
+    return render_template(
+        "iocs/bulk_preview.html",
+        case=case,
+        rows=rows,
+        ioc_types=ioc_types,
+        fallback=fallback,
+        confidences=current_app.config["IOC_CONFIDENCES"],
+        statuses=current_app.config["IOC_STATUSES"],
+        detected_count=sum(1 for r in rows if r["detected"]),
+        fallback_count=sum(1 for r in rows if not r["detected"]),
+        duplicate_count=sum(1 for r in rows if r["duplicate_of"]),
+    )
+
+
+@iocs_bp.route("/<int:case_id_int>/iocs/bulk", methods=["POST"])
+@login_required
+@analyst_required
+def bulk_add(case_id_int):
+    """
+    Save the reviewed rows.
+
+    Types come from the form, not from re-running detection: the analyst may have
+    corrected one on the preview, and silently re-detecting would throw that
+    correction away. Every value is re-checked against the case for duplicates
+    here as well as on the preview — the preview is a proposal, and the case may
+    have changed since it was rendered.
+    """
+    case = db.get_or_404(Case, case_id_int)
+    f = request.form
+
+    values = f.getlist("value")
+    types = f.getlist("ioc_type")
+    if len(values) != len(types):
+        abort(400)
+
+    ioc_types = _active_ioc_types()
+    confidence = choice(f.get("confidence"), current_app.config["IOC_CONFIDENCES"],
+                        default="Medium")
+    status = choice(f.get("status"), current_app.config["IOC_STATUSES"],
+                    default="Active")
+    source = f.get("source", "").strip()
+    description = f.get("description", "").strip()
+    first_seen = parse_datetime(f.get("first_seen"))
+    last_seen = parse_datetime(f.get("last_seen"))
+    skip_dupes = f.get("skip_duplicates") == "1"
+
+    existing = {i.value.strip().lower() for i in case.iocs}
+
+    added, skipped = [], 0
+    for raw_value, raw_type in zip(values, types):
+        value = raw_value.strip()[:1024]
+        if not value:
+            continue
+        if skip_dupes and value.lower() in existing:
+            skipped += 1
+            continue
+
+        ioc = IOC(
+            case_id=case.id,
+            ioc_type=raw_type if raw_type in ioc_types else None,
+            value=value,
+            description=description,
+            confidence=confidence,
+            status=status,
+            source=source,
+            first_seen=first_seen,
+            last_seen=last_seen,
+            created_by_id=current_user.id,
+        )
+        db.session.add(ioc)
+        db.session.flush()
+        log_event("ioc", ioc.id, "created",
+                  detail=f"{ioc.ioc_type}: {ioc.value} (bulk)", case_id=case.id)
+        existing.add(value.lower())
+        added.append(ioc)
+
+    db.session.commit()
+
+    if added:
+        by_type = {}
+        for i in added:
+            by_type[i.ioc_type or "Untyped"] = by_type.get(i.ioc_type or "Untyped", 0) + 1
+        breakdown = ", ".join(f"{t} ({n})" for t, n in sorted(by_type.items()))
+        flash(f"{len(added)} indicator{'s' if len(added) != 1 else ''} added — {breakdown}.",
+              "success")
+    if skipped:
+        flash(f"{skipped} already on this case; skipped.", "info")
+    if not added and not skipped:
+        flash("Nothing was added.", "warning")
+
     return redirect(url_for("cases.detail", case_id_int=case.id) + "#iocs")
 
 

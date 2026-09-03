@@ -6,6 +6,9 @@ _next_case_id had drifted to different fallback behaviour, and one of them would
 hand back an ID that already existed. One copy, one behaviour.
 """
 
+import ipaddress
+import re
+
 from flask import current_app
 from flask_login import current_user
 
@@ -163,6 +166,97 @@ def parse_affected_systems(text):
             seen.add(line)
             result.append(line)
     return result
+
+
+# Indicator shapes. Recognition, not inference — a 64-character hex string is a
+# SHA-256 or it is not, and "CVE-2026-27962" is a CVE or it is not. Nothing here
+# weighs probabilities.
+_IOC_HASH_LENGTHS = {32: "File Hash MD5", 40: "File Hash SHA1", 64: "File Hash SHA256"}
+_IOC_HEX = re.compile(r"^[A-Fa-f0-9]+$")
+_IOC_CVE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
+_IOC_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
+# The final label must be alphabetic. Hyphens and dots are both legal inside a
+# domain, so without this an address range — 10.20.30.5-10.20.30.40 — parses as a
+# perfectly well-formed domain whose labels happen to be numeric, and gets filed
+# as one. Every real TLD is alphabetic, so requiring it costs nothing and closes
+# the whole family of numeric-looking false positives at once.
+_IOC_DOMAIN = re.compile(
+    r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
+    r"(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*"
+    r"\.[A-Za-z]{2,63}$"
+)
+
+
+def detect_ioc_type(value):
+    """
+    Work out an indicator's type from its shape, or return None.
+
+    Returns a value from the ioc_type lookup list, so a detected type is one an
+    admin can already see and manage in Settings — not a parallel vocabulary.
+
+    None is a real answer and the important one: it means this string does not
+    match any shape CAIRN recognises, and the caller must fall back to a type a
+    person chose. Nothing gets typed by guess. An indicator mislabelled by the
+    parser is worse than one left for a human, because the label looks like a
+    decision somebody made.
+
+    Deliberately not handled: CIDR notation and address ranges. There is no
+    ioc_type for them, and silently filing 10.20.30.0/24 as an "IP Address"
+    would record a block as though it were a host.
+    """
+    v = (value or "").strip()
+    if not v:
+        return None
+
+    if _IOC_CVE.match(v):
+        return "CVE"
+
+    # Length first, then hex — "deadbeef" is hex but is not a hash of any kind.
+    if len(v) in _IOC_HASH_LENGTHS and _IOC_HEX.match(v):
+        return _IOC_HASH_LENGTHS[len(v)]
+
+    try:
+        return "IP Address" if ipaddress.ip_address(v).version == 4 else "IPv6 Address"
+    except ValueError:
+        pass
+
+    if v.lower().startswith(("http://", "https://")):
+        return "URL"
+    if _IOC_EMAIL.match(v):
+        return "Email Address"
+    if _IOC_DOMAIN.match(v):
+        return "Domain"
+
+    return None
+
+
+def parse_ioc_block(text):
+    """
+    Split a pasted block into candidate indicator values.
+
+    One per line, blanks dropped, order preserved, duplicates collapsed
+    case-insensitively — the same shape as the affected-systems box analysts
+    already use, so a paste from a threat report or a spreadsheet column works
+    without reformatting.
+
+    Commas and semicolons are treated as line breaks too. A list copied out of a
+    report is as likely to arrive comma-separated as newline-separated, and
+    splitting on them costs nothing: no indicator type CAIRN recognises contains
+    either character.
+    """
+    if not text:
+        return []
+    seen, out = set(), []
+    for chunk in re.split(r"[\n\r,;]+", text):
+        v = chunk.strip().strip("\"'")
+        if not v:
+            continue
+        key = v.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(v[:1024])
+    return out
 
 
 def normalize_asset_name(name):

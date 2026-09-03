@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Review indicators — {{ case.case_id }}{% endblock %}
+{% block page_title %}Review indicators for {{ case.case_id }}{% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <a href="{{ url_for('cases.detail', case_id_int=case.id) }}#iocs"
+     class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left"></i> Back to case
+  </a>
+</div>
+
+<div class="alert alert-info py-2 small">
+  <strong>{{ rows|length }} value{{ 's' if rows|length != 1 }}</strong> parsed.
+  {{ detected_count }} typed by shape.
+  {% if fallback_count %}
+  <strong>{{ fallback_count }} not recognised</strong> and set to
+  <em>{{ fallback }}</em> — check those rows before saving.
+  {% endif %}
+  {% if duplicate_count %}
+  {{ duplicate_count }} already on this case.
+  {% endif %}
+  Nothing has been saved yet.
+</div>
+
+<form method="POST" action="{{ url_for('iocs.bulk_add', case_id_int=case.id) }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+  <div class="card mb-3">
+    <div class="card-header bg-white fw-semibold small">Applied to every indicator below</div>
+    <div class="card-body">
+      <div class="row g-2">
+        <div class="col-md-2">
+          <label class="form-label small fw-semibold">Confidence</label>
+          <select name="confidence" class="form-select form-select-sm">
+            {% for c in confidences %}
+            <option value="{{ c }}" {% if c == 'Medium' %}selected{% endif %}>{{ c }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label small fw-semibold">Status</label>
+          <select name="status" class="form-select form-select-sm">
+            {% for s in statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small fw-semibold">Source</label>
+          <input type="text" name="source" class="form-control form-control-sm"
+                 maxlength="256" placeholder="Where these came from">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label small fw-semibold">First seen</label>
+          <input type="datetime-local" name="first_seen" class="form-control form-control-sm">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label small fw-semibold">Last seen</label>
+          <input type="datetime-local" name="last_seen" class="form-control form-control-sm">
+        </div>
+      </div>
+      <div class="mt-2">
+        <label class="form-label small fw-semibold">Description</label>
+        <input type="text" name="description" class="form-control form-control-sm"
+               placeholder="Applied to all of them — e.g. “C2 infrastructure from vendor report”">
+      </div>
+      <div class="form-check mt-3">
+        <input class="form-check-input" type="checkbox" name="skip_duplicates"
+               value="1" id="skipDupes" checked>
+        <label class="form-check-label small" for="skipDupes">
+          Skip values already on this case ({{ duplicate_count }} found). Untick to add
+          them again anyway.
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header bg-white d-flex justify-content-between align-items-center">
+      <span class="fw-semibold small">Indicators</span>
+      <span class="small text-muted">Correct any type before saving — remove a row by clearing its value</span>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead>
+          <tr><th style="width:45%;">Value</th><th style="width:25%;">Type</th><th>Detection</th></tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr {% if r.duplicate_of %}class="table-warning"{% elif not r.detected %}class="table-light"{% endif %}>
+            <td>
+              <input type="text" name="value" value="{{ r.value }}"
+                     class="form-control form-control-sm font-monospace">
+            </td>
+            <td>
+              <select name="ioc_type" class="form-select form-select-sm">
+                {% for t in ioc_types %}
+                <option value="{{ t }}" {% if t == r.ioc_type %}selected{% endif %}>{{ t }}</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td class="small">
+              {% if r.duplicate_of %}
+                <span class="badge bg-warning text-dark">Already on this case</span>
+                <span class="text-muted">as {{ r.duplicate_of }}</span>
+              {% elif r.detected %}
+                <span class="text-success"><i class="bi bi-check-circle"></i> detected</span>
+              {% else %}
+                <span class="text-muted">
+                  <i class="bi bi-question-circle"></i> not recognised — using {{ fallback }}
+                </span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="card-footer bg-white d-flex gap-2">
+      <button class="btn btn-sm btn-primary">
+        <i class="bi bi-plus-lg"></i> Add these indicators
+      </button>
+      <a href="{{ url_for('cases.detail', case_id_int=case.id) }}#iocs"
+         class="btn btn-sm btn-outline-secondary">Cancel</a>
+    </div>
+  </div>
+</form>
+{% endblock %}
