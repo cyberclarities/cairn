@@ -41,6 +41,7 @@ from flask import (
 from flask_login import login_required, current_user
 
 from ..common import log_event, parse_int
+from ..seed import DEFAULT_LOOKUP_VALUES
 from ..decorators import admin_required
 from ..models import db, LookupValue, AuditLog, Case, Alert, User, utcnow, TIMELINE_COLORS
 
@@ -319,6 +320,37 @@ def index():
         )
         for list_name, _label in MANAGED_LOOKUP_LISTS
     }
+
+    # What each list is NOT currently offering, and why that has to be visible.
+    #
+    # Removing a value sets is_active = False rather than deleting the row, so
+    # that indicators already filed under it keep their label. But this page only
+    # ever rendered active rows, so a removed value became invisible: gone from
+    # every dropdown, and gone from the one screen an admin would go to to put it
+    # back. The seed does not repair it either — it seeds a list only when the
+    # list is entirely absent, so a list that is merely missing a value stays
+    # missing forever.
+    #
+    # The two together are how "IOC Type has URL but no IP Address" becomes a
+    # permanent condition with nothing on screen to explain it. Both states are
+    # surfaced below and both are one click from being restored.
+    withheld = {}
+    for list_name, _label in MANAGED_LOOKUP_LISTS:
+        active = {lv.value for lv in lists[list_name]}
+        inactive_rows = (
+            LookupValue.query
+            .filter_by(list_name=list_name, is_active=False)
+            .order_by(LookupValue.display_order)
+            .all()
+        )
+        rows = [{"value": lv.value, "reason": "removed"}
+                for lv in inactive_rows if lv.value not in active]
+        seen = active | {r["value"] for r in rows}
+        rows += [{"value": v, "reason": "never added"}
+                 for v in DEFAULT_LOOKUP_VALUES.get(list_name, [])
+                 if v not in seen]
+        if rows:
+            withheld[list_name] = rows
     cases = Case.query.order_by(Case.case_id).all()
 
     # Fixed 7 slots — always all 7, active or not, in slot order. Zipped with
@@ -351,6 +383,7 @@ def index():
         }
 
     return render_template("admin/settings.html", lists=lists, cases=cases,
+                           withheld=withheld,
                            purge_preview=purge_preview, timeline_colors=timeline_colors,
                            managed_lists=MANAGED_LOOKUP_LISTS,
                            tab_list=list(MANAGED_LOOKUP_LISTS) + list(_EXTRA_SETTINGS_TABS))
@@ -388,6 +421,43 @@ def add_lookup():
         db.session.commit()
 
     flash(f"'{value}' added to {list_name}.", "success")
+    return redirect(url_for("settings.index") + f"#{list_name}")
+
+
+@settings_bp.route("/lookup/restore", methods=["POST"])
+@login_required
+@admin_required
+def restore_lookup():
+    """
+    Put a withheld value back into a list.
+
+    Addressed by (list_name, value) rather than by row id, because the two cases
+    this handles are not the same shape: a value that was removed still has a row
+    to reactivate, and a default that was never seeded has no row at all. An
+    admin should not have to know which of those they are looking at.
+    """
+    list_name = request.form.get("list_name", "")
+    value = request.form.get("value", "").strip()
+    managed = {name for name, _ in MANAGED_LOOKUP_LISTS}
+    if list_name not in managed or not value:
+        abort(400)
+
+    existing = LookupValue.query.filter_by(list_name=list_name, value=value).first()
+    if existing:
+        existing.is_active = True
+    else:
+        max_order = (
+            db.session.query(db.func.max(LookupValue.display_order))
+            .filter_by(list_name=list_name)
+            .scalar() or 0
+        )
+        db.session.add(
+            LookupValue(list_name=list_name, value=value, display_order=max_order + 1)
+        )
+    log_event("lookup_value", existing.id if existing else None, "restored",
+              detail=f"{list_name}: {value}")
+    db.session.commit()
+    flash(f"'{value}' is available again in {list_name}.", "success")
     return redirect(url_for("settings.index") + f"#{list_name}")
 
 

@@ -761,3 +761,156 @@ def test_bulk_add_skips_unrecognised_types_and_saves_the_rest(app):
     with app.app_context():
         rows = IOC.query.filter_by(case_id=case_id).all()
         assert [r.value for r in rows] == ["8.8.4.4"]
+
+
+# ---------------------------------------------------------------------------
+# Looking indicators up as they are pasted in
+# ---------------------------------------------------------------------------
+#
+# The paste is the moment an analyst has a block of addresses from a vendor
+# report and wants to know which of them anyone has seen before. Making them
+# save first and select second is a step with no purpose.
+#
+# The lookups run after the insert has committed. A provider being slow must
+# not put the paste itself at risk.
+
+@db_required
+def test_bulk_add_looks_up_what_it_added_when_asked(app, monkeypatch):
+    from app.models import Case, IOC, IOCEnrichment, db
+
+    monkeypatch.setattr(ti.requests, "request", fake_response(
+        {"data": {"abuseConfidenceScore": 71, "totalReports": 6}}))
+
+    with app.app_context():
+        case = Case(case_id="TI-" + uuid.uuid4().hex[:6], title="ti", severity="Low",
+                    status="New", escalated=False, board_flagged=False)
+        db.session.add(case)
+        db.session.commit()
+        case_id = case.id
+
+    client = _client(app)
+    client.post(f"/cases/{case_id}/iocs/bulk",
+                data={"value": [PUBLIC_IP, "1.0.0.1"],
+                      "ioc_type": ["IP Address", "IP Address"],
+                      "enrich_after": "1"},
+                follow_redirects=True)
+
+    with app.app_context():
+        iocs = IOC.query.filter_by(case_id=case_id).all()
+        assert len(iocs) == 2
+        for ioc in iocs:
+            assert IOCEnrichment.query.filter_by(
+                ioc_id=ioc.id, provider="abuseipdb").count() == 1
+
+
+@db_required
+def test_bulk_add_does_not_look_anything_up_unless_asked(app):
+    """
+    Enrichment is opt-in at the point of paste, exactly as it is everywhere else.
+    Pasting a list must never disclose it as a side effect.
+    """
+    from app.models import Case, IOC, IOCEnrichment, db
+
+    with app.app_context():
+        case = Case(case_id="TI-" + uuid.uuid4().hex[:6], title="ti", severity="Low",
+                    status="New", escalated=False, board_flagged=False)
+        db.session.add(case)
+        db.session.commit()
+        case_id = case.id
+
+    client = _client(app)
+    # no_network is active: any request at all fails this test.
+    client.post(f"/cases/{case_id}/iocs/bulk",
+                data={"value": [PUBLIC_IP], "ioc_type": ["IP Address"]},
+                follow_redirects=True)
+
+    with app.app_context():
+        ioc = IOC.query.filter_by(case_id=case_id).one()
+        assert IOCEnrichment.query.filter_by(ioc_id=ioc.id).count() == 0
+
+
+@db_required
+def test_bulk_add_saves_every_indicator_even_past_the_lookup_ceiling(app, monkeypatch):
+    """
+    The cap is on lookups, not on the paste. Losing indicators because too many
+    were pasted to enrich in one go would be the wrong trade entirely.
+    """
+    from app.models import Case, IOC, IOCEnrichment, db
+
+    monkeypatch.setattr(ti.requests, "request", fake_response(
+        {"data": {"abuseConfidenceScore": 5, "totalReports": 0}}))
+
+    with app.app_context():
+        case = Case(case_id="TI-" + uuid.uuid4().hex[:6], title="ti", severity="Low",
+                    status="New", escalated=False, board_flagged=False)
+        db.session.add(case)
+        db.session.commit()
+        case_id = case.id
+
+    over = ti.BATCH_MAX + 6
+    values = [f"104.18.{n // 256}.{n % 256}" for n in range(1, over + 1)]
+
+    client = _client(app)
+    client.post(f"/cases/{case_id}/iocs/bulk",
+                data={"value": values, "ioc_type": ["IP Address"] * over,
+                      "enrich_after": "1"},
+                follow_redirects=True)
+
+    with app.app_context():
+        iocs = IOC.query.filter_by(case_id=case_id).all()
+        assert len(iocs) == over
+        enriched = sum(
+            1 for i in iocs
+            if IOCEnrichment.query.filter_by(ioc_id=i.id).count()
+        )
+        assert enriched == ti.BATCH_MAX
+
+
+@db_required
+def test_bulk_add_enrichment_failure_does_not_lose_the_paste(app, monkeypatch):
+    """
+    The insert commits before any provider is called. An adapter blowing up
+    afterwards costs the lookups, never the indicators.
+    """
+    from app.models import Case, IOC, db
+
+    def _boom(*a, **k):
+        raise RuntimeError("provider exploded")
+    monkeypatch.setattr(ti.requests, "request", _boom)
+
+    with app.app_context():
+        case = Case(case_id="TI-" + uuid.uuid4().hex[:6], title="ti", severity="Low",
+                    status="New", escalated=False, board_flagged=False)
+        db.session.add(case)
+        db.session.commit()
+        case_id = case.id
+
+    client = _client(app)
+    r = client.post(f"/cases/{case_id}/iocs/bulk",
+                    data={"value": [PUBLIC_IP], "ioc_type": ["IP Address"],
+                          "enrich_after": "1"},
+                    follow_redirects=True)
+    assert r.status_code == 200
+
+    with app.app_context():
+        assert IOC.query.filter_by(case_id=case_id, value=PUBLIC_IP).count() == 1
+
+
+@db_required
+def test_the_preview_offers_lookup_only_for_types_a_provider_answers_for(app):
+    from app.models import Case, db
+
+    with app.app_context():
+        case = Case(case_id="TI-" + uuid.uuid4().hex[:6], title="ti", severity="Low",
+                    status="New", escalated=False, board_flagged=False)
+        db.session.add(case)
+        db.session.commit()
+        case_id = case.id
+
+    client = _client(app)
+    r = client.post(f"/cases/{case_id}/iocs/bulk/preview",
+                    data={"block": f"{PUBLIC_IP}\nbad.example.com",
+                          "fallback_type": "IP Address"})
+    body = r.get_data(as_text=True)
+    assert "Look these up with threat intelligence" in body
+    assert "2 of 2" in body

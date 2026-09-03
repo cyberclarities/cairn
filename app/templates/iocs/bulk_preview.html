@@ -71,6 +71,27 @@
           them again anyway.
         </label>
       </div>
+
+      {% if enrichable_count %}
+      <div class="form-check mt-2">
+        <input class="form-check-input" type="checkbox" name="enrich_after"
+               value="1" id="enrichAfter">
+        <label class="form-check-label small" for="enrichAfter">
+          Look these up with threat intelligence after adding
+          ({{ enrichable_count }} of {{ rows|length }} have a provider that answers
+          for their type).
+        </label>
+        <div class="form-text small">
+          This sends each indicator to the configured providers, which tells them
+          you are interested in it. Internal and reserved addresses are refused
+          before anything is sent. Every attempt is written to the case audit log.
+          {% if rows|length > enrich_batch_max %}
+          Only the first {{ enrich_batch_max }} are looked up here — provider rate
+          limits make a larger run unreliable. Do the rest from the IOC tab.
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
     </div>
   </div>
 

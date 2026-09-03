@@ -44,6 +44,33 @@
           <div class="list-group-item text-muted small">No values yet.</div>
           {% endfor %}
         </div>
+
+        {# Values this list is not currently offering. Removing a value only
+           deactivates its row, so without this block a removed value vanishes
+           from every dropdown AND from this page — leaving nothing on screen to
+           explain why, say, IOC Type offers URL but not IP Address. #}
+        {% if withheld.get(list_name) %}
+        <div class="border rounded p-2 mb-3 bg-body-tertiary">
+          <div class="small text-muted mb-2">
+            Not currently offered in dropdowns. Restore any of these to put it back.
+          </div>
+          {% for w in withheld[list_name] %}
+          <div class="d-flex justify-content-between align-items-center py-1">
+            <span class="small">
+              {{ w.value }}
+              <span class="text-muted">— {{ w.reason }}</span>
+            </span>
+            <form method="POST" action="{{ url_for('settings.restore_lookup') }}" class="d-inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="list_name" value="{{ list_name }}">
+              <input type="hidden" name="value" value="{{ w.value }}">
+              <button class="btn btn-xs btn-outline-success btn-sm py-0 px-2">Restore</button>
+            </form>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+
         <!-- Add new -->
         <form method="POST" action="{{ url_for('settings.add_lookup') }}" class="d-flex gap-2">
           <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">

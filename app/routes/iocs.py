@@ -193,6 +193,14 @@ def bulk_preview(case_id_int):
         detected_count=sum(1 for r in rows if r["detected"]),
         fallback_count=sum(1 for r in rows if not r["detected"]),
         duplicate_count=sum(1 for r in rows if r["duplicate_of"]),
+        # Counted against the type each row will actually be saved as, including
+        # the fallback — not against what detection found. Offering to look up
+        # rows that no provider answers for would be an empty promise.
+        enrichable_count=sum(
+            1 for r in rows
+            if threat_intel.providers_for(r["ioc_type"], current_app.config)
+        ),
+        enrich_batch_max=threat_intel.BATCH_MAX,
     )
 
 
@@ -267,6 +275,30 @@ def bulk_add(case_id_int):
 
     db.session.commit()
 
+    # Look them up, if that was asked for.
+    #
+    # After the commit, not during it. Enrichment reaches the network and any
+    # provider can be slow or down; holding the insert of a hundred indicators
+    # open behind that would risk losing the paste over a lookup that was only
+    # ever a convenience. The indicators are saved first and are safe whatever
+    # happens next.
+    enrich_summary = None
+    if added and f.get("enrich_after") == "1":
+        batch = [i for i in added
+                 if threat_intel.providers_for(i.ioc_type, current_app.config)]
+        overflow = max(0, len(batch) - threat_intel.BATCH_MAX)
+        results = []
+        for ioc in batch[:threat_intel.BATCH_MAX]:
+            results.extend(_enrich_ioc(case, ioc))
+        db.session.commit()
+        if results:
+            enrich_summary = _summarise(results)
+        if overflow:
+            flash(f"{overflow} indicator(s) were added but not looked up — "
+                  f"{threat_intel.BATCH_MAX} is the most one run can do without "
+                  f"tripping provider rate limits. Select them on the IOC tab.",
+                  "info")
+
     if added:
         by_type = {}
         for i in added:
@@ -274,6 +306,8 @@ def bulk_add(case_id_int):
         breakdown = ", ".join(f"{t} ({n})" for t, n in sorted(by_type.items()))
         flash(f"{len(added)} indicator{'s' if len(added) != 1 else ''} added — {breakdown}.",
               "success")
+        if enrich_summary:
+            flash(f"Threat intelligence: {enrich_summary}.", "success")
     if skipped:
         flash(f"{skipped} already on this case; skipped.", "info")
     if untyped:
