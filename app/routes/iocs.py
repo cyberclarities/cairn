@@ -91,7 +91,7 @@ def add_ioc(case_id_int):
     value = f.get("value", "").strip()[:1024]
     if not value:
         flash("IOC value is required.", "danger")
-        return redirect(url_for("cases.detail", case_id_int=case.id))
+        return redirect(url_for("cases.detail", case_id_int=case.id) + "#iocs")
 
     # iocs.ioc_type is NOT NULL. This used to pass `or None` straight through,
     # so a form posted without a type — a stale page, a client that dropped the
@@ -174,6 +174,14 @@ def bulk_preview(case_id_int):
     rows = []
     for v in values:
         detected = detect_ioc_type(v)
+        # Detection has its own vocabulary; the picker is built from the active
+        # lookup list. If an admin has removed the detected type, no <option>
+        # carries `selected` and the browser silently submits the first one —
+        # which is how a domain got saved as an IP Address, badged green as
+        # "detected". Treat a type the picker cannot show as no detection at all,
+        # so the row falls back visibly instead of being quietly re-typed.
+        if detected not in ioc_types:
+            detected = None
         dupe = existing.get(v.strip().lower())
         rows.append({
             "value": v,
@@ -330,11 +338,28 @@ def edit_ioc(case_id_int, ioc_id):
         abort(404)
 
     f = request.form
-    old = {k: getattr(ioc, k) for k in ("ioc_type", "value", "confidence", "status", "source", "notes")}
+    tracked = ("ioc_type", "value", "confidence", "status", "source", "notes",
+               "description", "first_seen", "last_seen")
+    old = {k: getattr(ioc, k) for k in tracked}
 
     ioc.ioc_type = f.get("ioc_type", ioc.ioc_type) or None
     ioc.value = f.get("value", ioc.value).strip()[:1024]
-    ioc.description = f.get("description", "").strip()
+
+    # Only write a field the form actually sent.
+    #
+    # These three used to be written unconditionally from `f.get(name, "")`, and
+    # the Edit modal does not carry them — it posts type, value, confidence,
+    # status, source and notes. So every edit, including a one-click status flip,
+    # blanked the description and both seen dates. On a case where indicators
+    # were bulk-added with a shared description and first/last seen, that is the
+    # whole batch's context gone.
+    #
+    # It was also invisible: the audit loop below only covered the six fields the
+    # modal sends, so the three it destroyed were never recorded as changing.
+    # They are in `tracked` now, so any future edit path that does touch them
+    # leaves a trail.
+    if "description" in f:
+        ioc.description = f.get("description", "").strip()
     ioc.confidence = choice(f.get("confidence"), current_app.config["IOC_CONFIDENCES"],
                             default=ioc.confidence)
     ioc.status = choice(f.get("status"), current_app.config["IOC_STATUSES"],
@@ -342,8 +367,10 @@ def edit_ioc(case_id_int, ioc_id):
     ioc.source = f.get("source", "").strip()
     ioc.notes = f.get("notes", "").strip()
 
-    ioc.first_seen = parse_datetime(f.get("first_seen"))
-    ioc.last_seen = parse_datetime(f.get("last_seen"))
+    if "first_seen" in f:
+        ioc.first_seen = parse_datetime(f.get("first_seen"))
+    if "last_seen" in f:
+        ioc.last_seen = parse_datetime(f.get("last_seen"))
 
     new = {k: getattr(ioc, k) for k in old}
     for field in old:
@@ -546,5 +573,11 @@ def enrich_selected(case_id_int):
     if unhandled:
         flash(f"{unhandled} skipped: no configured provider answers for that type.",
               "info")
+    if not touched and not unhandled:
+        # Every id submitted belongs to some other case, or to rows deleted since
+        # the page was rendered. Saying nothing leaves the analyst believing the
+        # lookup ran.
+        flash("None of the selected indicators are on this case — nothing was "
+              "looked up. Reload the page and try again.", "warning")
 
     return redirect(url_for("cases.detail", case_id_int=case.id) + "#iocs")

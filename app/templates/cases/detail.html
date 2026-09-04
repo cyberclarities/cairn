@@ -365,8 +365,28 @@
               <i class="bi bi-search"></i>
             </button>
             {% endif %}
-            <button class="btn btn-xs btn-sm btn-outline-secondary py-0 px-2" type="button"
-                    onclick="openEditIoc({{ ioc.id }},'{{ ioc.ioc_type }}','{{ ioc.value|e }}','{{ ioc.confidence }}','{{ ioc.status }}','{{ ioc.source|default('')|e }}','{{ ioc.notes|default('')|e }}')">
+            {#
+              Values ride on data-* attributes, not inside a JS string literal.
+
+              This was onclick="openEditIoc({{ ioc.id }},'{{ ioc.value|e }}',...)".
+              Jinja's |e turns an apostrophe into &#39;, and the HTML parser
+              decodes that back to a bare ' before the JS is parsed — so the
+              escaping did nothing where it mattered. An indicator value of
+              x');alert(1);// closed the argument and ran. The benign version of
+              the same bug is more likely and just as bad: any value containing
+              an apostrophe, which a File Name/Path or Registry Key can easily
+              carry, broke that row's Edit button with nothing on screen to say
+              why. Attribute escaping is the right tool for attribute context.
+            #}
+            <button class="btn btn-xs btn-sm btn-outline-secondary py-0 px-2 js-edit-ioc"
+                    type="button"
+                    data-id="{{ ioc.id }}"
+                    data-type="{{ ioc.ioc_type }}"
+                    data-value="{{ ioc.value }}"
+                    data-confidence="{{ ioc.confidence }}"
+                    data-status="{{ ioc.status }}"
+                    data-source="{{ ioc.source|default('') }}"
+                    data-notes="{{ ioc.notes|default('') }}">
               <i class="bi bi-pencil"></i>
             </button>
             <button class="btn btn-xs btn-sm btn-outline-danger py-0 px-2"
@@ -395,7 +415,7 @@
                 <div class="text-muted">{{ r.error or r.summary or '—' }}</div>
                 <div class="text-muted">
                   {{ r.queried_at.strftime('%Y-%m-%d %H:%M') if r.queried_at }} UTC
-                  {% if r.queried_by %} · {{ r.queried_by.full_name or r.queried_by.username }}{% endif %}
+                  {% if r.queried_by %} · {{ r.queried_by.name or r.queried_by.username }}{% endif %}
                   {% if r.permalink %}
                     · <a href="{{ r.permalink }}" target="_blank" rel="noopener noreferrer">open at provider</a>
                   {% endif %}
@@ -1475,6 +1495,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const tab = document.querySelector(`[data-bs-target="${hash}"]`);
     if (tab) new bootstrap.Tab(tab).show();
   }
+});
+
+// Bound from data-* attributes rather than called from an onclick, so an
+// indicator value is never parsed as JavaScript. See the Edit button markup.
+document.addEventListener('click', function (ev) {
+  const btn = ev.target.closest('.js-edit-ioc');
+  if (!btn) return;
+  const d = btn.dataset;
+  openEditIoc(d.id, d.type, d.value, d.confidence, d.status, d.source, d.notes);
 });
 
 function openEditIoc(id, type, value, confidence, status, source, notes) {

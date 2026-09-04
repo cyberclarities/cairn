@@ -69,6 +69,20 @@ HASH_LENGTHS = {
 }
 _HEX_ONLY = re.compile(r"[0-9a-fA-F]+")
 
+# Suffixes that cannot resolve on the public internet, so a name under one is
+# internal whatever it looks like.
+#
+#   local      RFC 6762 (mDNS)
+#   home.arpa  RFC 8375
+#   test / example / invalid / localhost   RFC 2606
+#   onion      RFC 7686 - and a lookup would leak a hidden service of interest
+#   internal   the AWS and GCP default private zone, and common by convention
+#   lan / intranet / corp / private / home  conventional, ICANN-blocked as gTLDs
+RESERVED_SUFFIXES = (
+    "local", "localhost", "home.arpa", "internal", "intranet", "lan",
+    "corp", "private", "home", "onion", "test", "example", "invalid",
+)
+
 
 class SkipReason(Exception):
     """
@@ -156,6 +170,23 @@ def assert_disclosable(value, ioc_type):
             raise SkipReason(
                 f"'{host}' is not a public name — not sent."
             )
+
+        # Names under a reserved or special-use suffix are internal by
+        # definition. The address side of this guard was careful and the name
+        # side was not: dc01.corp.local, fileserver.internal and
+        # printer.home.arpa all went out in full, which publishes the internal
+        # naming scheme just as surely as sending 10.0.0.5 publishes the
+        # addressing. There is no public intelligence about any of them — the
+        # suffixes exist precisely so that there cannot be.
+        lowered = host.lower().rstrip(".")
+        for suffix in RESERVED_SUFFIXES:
+            if lowered == suffix or lowered.endswith("." + suffix):
+                raise SkipReason(
+                    f"'{host}' is under '.{suffix}', which is reserved for "
+                    f"internal use. It was not sent — there is no public "
+                    f"intelligence about it, and asking would disclose the "
+                    f"internal naming scheme."
+                )
         return
 
     kind = None

@@ -290,6 +290,16 @@ def _alert_purge_query(status: str, source: str, days: int):
 # seeded by cc385e2, populated correctly, and invisible in Settings because this
 # screen never asked for them. Add a new list here and it appears; there is no
 # second place to remember.
+# Widest value each list may hold, set by the column its values end up in —
+# IOC.ioc_type and Case.case_type are String(32), not LookupValue's String(256).
+# Enforced when a value is added, because the alternative is a 500 later, on a
+# different page, that an admin cannot undo without the database.
+LOOKUP_VALUE_MAX_LENGTH = {
+    "case_type": 64,        # Case.case_type
+    "ioc_type": 32,         # IOC.ioc_type  — the narrowest, and the one that bit
+    "evidence_type": 64,    # Evidence.evidence_type
+}
+
 MANAGED_LOOKUP_LISTS = (
     ("case_type", "Case Types"),
     ("ioc_type", "IOC Types"),
@@ -399,6 +409,35 @@ def add_lookup():
         flash("List name and value are required.", "danger")
         return redirect(url_for("settings.index"))
 
+    # The list name arrives from the form and was not checked, so a crafted or
+    # stale post created rows under a name no page renders — invisible from then
+    # on, with no way to remove them.
+    if list_name not in {name for name, _ in MANAGED_LOOKUP_LISTS} | {"timeline_color"}:
+        abort(400)
+
+    # LookupValue.value holds 256 characters; the columns these values are
+    # written into are narrower. An ioc_type of 33 characters was accepted here
+    # and then failed every IOC insert with a 500 from Postgres — the error
+    # surfacing at the far end of the app, on a page with nothing to do with
+    # Settings, and unfixable without the database.
+    limit = LOOKUP_VALUE_MAX_LENGTH.get(list_name, 64)
+    if len(value) > limit:
+        flash(f"'{value[:40]}…' is {len(value)} characters. {list_name} values "
+              f"are stored in a {limit}-character column — shorten it.", "danger")
+        return redirect(url_for("settings.index") + f"#{list_name}")
+
+    # Case-insensitive, so "mutex" cannot sit beside "Mutex" as a second row that
+    # splits the indicators filed under either.
+    clash = next(
+        (lv for lv in LookupValue.query.filter_by(list_name=list_name).all()
+         if lv.value.lower() == value.lower()),
+        None,
+    )
+    if clash and clash.value != value:
+        flash(f"'{clash.value}' already exists in {list_name}, differing only in "
+              f"case. Restore or rename that one instead.", "warning")
+        return redirect(url_for("settings.index") + f"#{list_name}")
+
     # timeline_color is a fixed 7-slot palette keyed by display_order (see
     # TIMELINE_COLORS in models.py) — an 8th row here wouldn't correspond to
     # any real color and would just sit inert. rename_timeline_color is the
@@ -420,6 +459,9 @@ def add_lookup():
         db.session.add(LookupValue(list_name=list_name, value=value, display_order=max_order + 1))
         db.session.commit()
 
+    log_event("lookup_value", existing.id if existing else None, "added",
+              detail=f"{list_name}: {value}")
+    db.session.commit()
     flash(f"'{value}' added to {list_name}.", "success")
     return redirect(url_for("settings.index") + f"#{list_name}")
 
@@ -454,8 +496,11 @@ def restore_lookup():
         db.session.add(
             LookupValue(list_name=list_name, value=value, display_order=max_order + 1)
         )
-    log_event("lookup_value", existing.id if existing else None, "restored",
-              detail=f"{list_name}: {value}")
+        db.session.flush()          # so a newly created row has an id to record
+    log_event("lookup_value",
+              existing.id if existing else
+              LookupValue.query.filter_by(list_name=list_name, value=value).one().id,
+              "restored", detail=f"{list_name}: {value}")
     db.session.commit()
     flash(f"'{value}' is available again in {list_name}.", "success")
     return redirect(url_for("settings.index") + f"#{list_name}")

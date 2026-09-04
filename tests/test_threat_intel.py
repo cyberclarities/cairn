@@ -101,6 +101,27 @@ NEVER_SEND = [
     ("not-an-ip", "IP Address"),
     ("", "IP Address"),
 
+    # Names under a reserved or special-use suffix. Internal by definition —
+    # the suffixes exist so that they cannot resolve publicly — and every one of
+    # these was sent in full before, publishing the internal naming scheme as
+    # surely as sending 10.0.0.5 publishes the addressing.
+    ("dc01.corp.local", "Domain"),
+    ("fileserver.internal", "Domain"),
+    ("printer.home.arpa", "Domain"),
+    ("nas.lan", "Domain"),
+    ("wiki.intranet", "Domain"),
+    ("app.corp", "Domain"),
+    ("host.private", "Domain"),
+    ("thing.localhost", "Domain"),
+    ("scratch.invalid", "Domain"),
+    ("demo.example", "Domain"),
+    ("sample.test", "Domain"),
+    ("xyzabc.onion", "Domain"),
+    ("https://intranet.corp.local/app", "URL"),
+    ("http://build.internal:8080/job", "URL"),
+    ("DC01.CORP.LOCAL", "Domain"),
+    ("dc01.corp.local.", "Domain"),
+
     # Values filed as a digest that are not one.
     ("not-a-hash", "File Hash MD5"),
     ("aaaa", "File Hash SHA256"),
@@ -115,7 +136,8 @@ MAY_SEND = [
     ("104.18.32.7", "IP Address"),
     ("2606:4700:4700::1111", "IPv6 Address"),
     ("https://example.com/path", "URL"),
-    ("evil-domain.test", "Domain"),
+    ("evil-domain.example.com", "Domain"),
+    ("c2.badhost.ru", "Domain"),
     ("d41d8cd98f00b204e9800998ecf8427e", "File Hash MD5"),
     ("D41D8CD98F00B204E9800998ECF8427E", "File Hash MD5"),
     ("da39a3ee5e6b4b0d3255bfef95601890afd80709", "File Hash SHA1"),
@@ -1002,3 +1024,26 @@ def test_the_refusal_is_a_skip_not_an_error(monkeypatch):
                            "10.0.0.5 10.0.0.6", "IP Address", "k")
     assert result["status"] == "skipped"
     assert result["error"] is None
+
+
+def test_a_reserved_suffix_is_named_in_the_reason():
+    """
+    The stored line has to say why, or the analyst reads it as a failure and
+    re-runs it. It is not a failure — there is nothing out there to ask.
+    """
+    with pytest.raises(ti.SkipReason) as exc:
+        ti.assert_disclosable("dc01.corp.local", "Domain")
+    text = str(exc.value)
+    assert ".local" in text
+    assert "reserved" in text.lower()
+    assert "not sent" in text.lower()
+
+
+def test_a_public_domain_that_merely_contains_a_reserved_word_still_goes_out():
+    """
+    Suffix matching, not substring matching. "local" inside a name is not a
+    reserved suffix, and refusing localbank.com would be a different bug.
+    """
+    for value in ("localbank.com", "internal-affairs.org", "test-lab.co.uk",
+                  "mycorp.com", "onionmarket.net"):
+        ti.assert_disclosable(value, "Domain")

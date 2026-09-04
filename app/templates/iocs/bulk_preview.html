@@ -85,7 +85,7 @@
           This sends each indicator to the configured providers, which tells them
           you are interested in it. Internal and reserved addresses are refused
           before anything is sent. Every attempt is written to the case audit log.
-          {% if rows|length > enrich_batch_max %}
+          {% if enrichable_count > enrich_batch_max %}
           Only the first {{ enrich_batch_max }} are looked up here — provider rate
           limits make a larger run unreliable. Do the rest from the IOC tab.
           {% endif %}

@@ -187,6 +187,57 @@ _IOC_DOMAIN = re.compile(
 )
 
 
+# Final labels that make a string ambiguous between a domain and a filename.
+#
+# "evil.exe" satisfies every structural rule for a hostname: legal label
+# characters and an alphabetic final label of 2-63 characters. Nothing about its
+# shape says which it is, and CAIRN was calling it a Domain — then offering to
+# look it up, which sent the victim's malware filenames to a third party as
+# domain queries.
+#
+# Detection here is recognition, not inference, so the honest answer for an
+# ambiguous string is no answer: it lands untyped and the analyst picks.
+#
+# THE HARD CONSTRAINT ON THIS LIST: nothing in it may be a real TLD. The first
+# cut of this included "com", which silently stopped CAIRN recognising the most
+# common domain on earth — a worse bug than the one being fixed, and caught only
+# because the check below runs on import. Extensions that collide with a live
+# TLD (sh, md, pl, py, cd, im, ...) are therefore absent, and a filename ending
+# in one of those still types as a Domain. That is the limit of a shape-based
+# rule and it is the safe side of it.
+#
+# zip and mov are the deliberate exceptions: both are real gTLDs and both are
+# far more often archive and video files. Declining costs a rare domain a type;
+# asserting costs a filename its confidentiality.
+_AMBIGUOUS_FINAL_LABELS = frozenset("""
+    exe dll sys scr bat cmd ps1 vbs vbe jse wsf hta msi msp cpl ocx drv
+    jar class php aspx jsp cgi
+    doc docx xls xlsx xlsm ppt pptx pdf rtf txt csv tsv
+    rar 7z tar gz bz2 iso vhd vhdx
+    png jpg jpeg gif bmp svg ico webp mp3 mp4 avi wav
+    dat bin tmp bak cfg conf config ini reg inf lnk
+    json xml yaml yml toml sqlite pem crt cer p12 pfx
+    dmp pcap evtx
+    zip mov
+""".split())
+
+# Live TLDs that are also common file extensions. Nothing above may appear here.
+# Checked on import rather than in a test, because the failure it prevents is
+# silent: detection simply stops recognising a whole class of domain, and every
+# caller carries on as though nothing is wrong.
+_REAL_TLDS_THAT_LOOK_LIKE_EXTENSIONS = frozenset("""
+    com sh md pl py cd im io me co in is it at be de ru cn jp us uk
+    net org info app dev sh ai gg tv cc ws bio one link live
+""".split())
+
+_collisions = _AMBIGUOUS_FINAL_LABELS & _REAL_TLDS_THAT_LOOK_LIKE_EXTENSIONS
+if _collisions:  # pragma: no cover - guards a silent, wide-blast-radius mistake
+    raise RuntimeError(
+        "detect_ioc_type would stop recognising real domains ending in: "
+        + ", ".join(sorted(_collisions))
+    )
+
+
 def detect_ioc_type(value):
     """
     Work out an indicator's type from its shape, or return None.
@@ -225,6 +276,10 @@ def detect_ioc_type(value):
     if _IOC_EMAIL.match(v):
         return "Email Address"
     if _IOC_DOMAIN.match(v):
+        # Structurally a hostname — but so is every filename with an extension.
+        # Decline rather than assert. See _AMBIGUOUS_FINAL_LABELS.
+        if v.rsplit(".", 1)[-1].lower() in _AMBIGUOUS_FINAL_LABELS:
+            return None
         return "Domain"
 
     return None
@@ -234,62 +289,60 @@ def parse_ioc_block(text):
     """
     Split a pasted block into candidate indicator values.
 
-    One per line, blanks dropped, order preserved, duplicates collapsed
-    case-insensitively — the same shape as the affected-systems box analysts
-    already use, so a paste from a threat report or a spreadsheet column works
-    without reformatting.
+    Newlines always separate — nothing CAIRN recognises spans a line. Everything
+    else is decided per chunk by one rule: split only if every piece the split
+    would produce is itself a recognisable indicator.
 
-    Commas, semicolons and pipes are treated as line breaks too. A list copied
-    out of a report is as likely to arrive comma-separated as newline-separated,
-    and splitting on them costs nothing: no indicator type CAIRN recognises
-    contains any of those characters.
+    That rule earns its keep twice.
 
-    Whitespace inside a chunk is a harder call, and it is made per chunk rather
-    than globally. A block of addresses pasted out of a PDF or a spreadsheet row
-    arrives space- or tab-separated and has to come apart, or the whole list
-    lands as one indicator — which is not merely untidy: a single row holding
-    "10.0.0.5 10.0.0.6" is a value that matches no type, and everything
-    downstream that reasons about the type is then reasoning about a fiction.
+    Commas, semicolons and pipes look like safe separators and are not. They are
+    legal and common inside a URL, and a query string was being torn in half:
+    "https://x/a?p=1,2" became "https://x/a?p=1" and "2", the first of which is
+    a perfectly valid URL and so got saved, and enriched, as a truncated
+    indicator that was never in the report. Under the rule it stays whole,
+    because "2" is not an indicator — while "8.8.8.8, 1.1.1.1" still comes apart,
+    because both halves are.
 
-    But some indicator types legitimately contain spaces. C:\\Program Files\\evil.exe
-    is one value, not three, and splitting it would destroy it.
+    Whitespace is the same problem from the other side. A block copied out of a
+    PDF or across a spreadsheet row arrives space- or tab-separated and has to
+    come apart, but C:\\Program Files\\evil.exe is one value and must not.
 
-    So a chunk is only split on whitespace when every piece it would produce is
-    itself a recognisable indicator. "8.8.8.8 1.1.1.1" splits; the file path does
-    not, because "Files\\evil.exe" recognises as nothing. The rule needs no list
-    of which types may contain spaces, and it fails toward leaving the analyst's
-    text alone.
+    The rule needs no list of which types may contain which characters, and it
+    fails toward leaving the analyst's text alone. A line it declines to split
+    arrives on the review page as one row, visible and correctable, which is
+    what that page is for.
     """
     if not text:
         return []
     seen, out = set(), []
-    for chunk in re.split(r"[\n\r,;|]+", text):
-        for v in _split_if_all_indicators(chunk):
-            v = v.strip().strip("\"'")
-            if not v:
-                continue
-            key = v.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(v[:1024])
+    for line in re.split(r"[\n\r]+", text):
+        for chunk in _split_if_all_indicators(line, r"[,;|]"):
+            for v in _split_if_all_indicators(chunk, r"\s+"):
+                v = v.strip().strip("\"'")
+                if not v:
+                    continue
+                key = v.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(v[:1024])
     return out
 
 
-def _split_if_all_indicators(chunk):
+def _split_if_all_indicators(chunk, pattern):
     """
-    Break *chunk* on whitespace, but only if doing so yields nothing but
+    Break *chunk* on *pattern*, but only if doing so yields nothing but
     recognisable indicators. Otherwise hand back the chunk untouched.
     """
     stripped = chunk.strip()
     if not stripped:
         return []
-    pieces = stripped.split()
+    pieces = [p.strip().strip("\"'") for p in re.split(pattern, stripped)]
+    pieces = [p for p in pieces if p]
     if len(pieces) < 2:
         return [stripped]
-    cleaned = [p.strip().strip("\"'") for p in pieces]
-    if all(detect_ioc_type(p) for p in cleaned if p):
-        return cleaned
+    if all(detect_ioc_type(p) for p in pieces):
+        return pieces
     return [stripped]
 
 
