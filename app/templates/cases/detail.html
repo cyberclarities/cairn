@@ -402,6 +402,14 @@
                 </div>
               </div>
               {% endfor %}
+              {% if ti_unconfigured.get(ioc.ioc_type) %}
+              <div class="text-muted">
+                Not asked, no API key on this deployment:
+                {{ ti_unconfigured[ioc.ioc_type]|join(', ') }}.
+                An "unknown" above means the sources that were asked had nothing
+                on it — not that it is clean.
+              </div>
+              {% endif %}
               <div class="text-muted fst-italic">
                 A verdict is what one provider said on the date shown, not a finding.
                 Corroborate before it goes in the report.
@@ -422,6 +430,17 @@
     <span class="text-muted small ms-2">
       Up to {{ ti_batch_max }} at a time. Re-running a provider replaces its previous answer.
     </span>
+    {% set gaps = [] %}
+    {% for t, labels in ti_unconfigured.items() if labels and ti_available.get(t) %}
+      {% set _ = gaps.append(t) %}
+    {% endfor %}
+    {% if gaps %}
+    <div class="text-muted small mt-2">
+      Some indicator types have only their keyless source configured, so a lookup
+      can come back "unknown" simply because that one source had nothing. Add an
+      API key to widen the coverage — see the TI_ keys in <code>.env.example</code>.
+    </div>
+    {% endif %}
     {% endif %}
     </form>
 

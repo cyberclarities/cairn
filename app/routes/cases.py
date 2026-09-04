@@ -174,6 +174,26 @@ def detail(case_id_int):
         ioc_type: [p.slug for p in threat_intel.providers_for(ioc_type, current_app.config)]
         for ioc_type in threat_intel.SUPPORTED_TYPES
     }
+
+    # Which providers COULD answer for a type but have no key on this deployment.
+    #
+    # Without this the page is quietly misleading. With no keys configured at
+    # all, a URL still gets a real answer — urlscan needs no key — while an IP
+    # address gets only GreyNoise and a hash only CIRCL, and both of those say
+    # "unknown" for anything they have not specifically seen. Side by side that
+    # reads as "IPs and hashes are not being assessed", when what actually
+    # happened is that the only source available for them had nothing to say.
+    # Naming what is missing turns a silent gap into a decision the operator can
+    # make.
+    ti_unconfigured = {
+        ioc_type: [
+            threat_intel.PROVIDERS[slug].label
+            for slug in threat_intel.PROVIDERS
+            if ioc_type in threat_intel.PROVIDERS[slug].supports
+            and slug not in ti_available[ioc_type]
+        ]
+        for ioc_type in threat_intel.SUPPORTED_TYPES
+    }
     ti_any_configured = any(ti_available.values())
     ti_by_ioc = {}
     if iocs:
@@ -226,6 +246,7 @@ def detail(case_id_int):
         case=case,
         ti_providers=ti_providers,
         ti_available=ti_available,
+        ti_unconfigured=ti_unconfigured,
         ti_any_configured=ti_any_configured,
         ti_by_ioc=ti_by_ioc,
         ti_batch_max=threat_intel.BATCH_MAX,

@@ -87,6 +87,26 @@ NEVER_SEND = [
     ("http://192.168.0.10:8080/login", "URL"),
     ("http://localhost/x", "URL"),
     ("http://[fd00::5]/x", "URL"),
+
+    # Values filed as an IP that are not one. Every line here was SENT before
+    # the guard was made to fail closed — including two that carry internal
+    # addressing straight out of the building. The first is the shape a pasted
+    # list took when it failed to split on whitespace, which is how it was found.
+    ("10.0.0.5 10.0.0.6", "IP Address"),
+    ("192.168.1.1, 192.168.1.2", "IP Address"),
+    ("10.0.0.5\t10.0.0.6", "IP Address"),
+    ("10.0.0.5/24", "IP Address"),
+    ("10.0.0.5:445", "IP Address"),
+    ("dc01.corp.internal", "IP Address"),
+    ("not-an-ip", "IP Address"),
+    ("", "IP Address"),
+
+    # Values filed as a digest that are not one.
+    ("not-a-hash", "File Hash MD5"),
+    ("aaaa", "File Hash SHA256"),
+    ("d41d8cd98f00b204e9800998ecf8427g", "File Hash MD5"),
+    ("d41d8cd98f00b204e9800998ecf8427", "File Hash MD5"),
+    ("d41d8cd98f00b204e9800998ecf8427e", "File Hash SHA256"),
 ]
 
 MAY_SEND = [
@@ -97,6 +117,10 @@ MAY_SEND = [
     ("https://example.com/path", "URL"),
     ("evil-domain.test", "Domain"),
     ("d41d8cd98f00b204e9800998ecf8427e", "File Hash MD5"),
+    ("D41D8CD98F00B204E9800998ECF8427E", "File Hash MD5"),
+    ("da39a3ee5e6b4b0d3255bfef95601890afd80709", "File Hash SHA1"),
+    ("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "File Hash SHA256"),
 ]
 
 
@@ -914,3 +938,67 @@ def test_the_preview_offers_lookup_only_for_types_a_provider_answers_for(app):
     body = r.get_data(as_text=True)
     assert "Look these up with threat intelligence" in body
     assert "2 of 2" in body
+
+
+# ---------------------------------------------------------------------------
+# The guard fails closed
+# ---------------------------------------------------------------------------
+#
+# assert_disclosable used to `return` — allow — for any value it could not parse
+# as an address, whatever type the value claimed to be. A guard that cannot read
+# a value cannot clear it, and the values it could not read were not exotic: a
+# pasted list that failed to split arrives as "10.0.0.5 10.0.0.6" in one row, and
+# a mistyped host arrives as "dc01.corp.internal" filed under IP Address. Both
+# were sent.
+
+def test_an_ip_that_is_not_an_ip_is_refused_with_a_usable_reason():
+    with pytest.raises(ti.SkipReason) as exc:
+        ti.assert_disclosable("10.0.0.5 10.0.0.6", "IP Address")
+    text = str(exc.value)
+    assert "not sent" in text.lower()
+    # The analyst has to be told what to do about it, not just that it stopped.
+    assert "split" in text.lower()
+
+
+def test_a_hostname_filed_as_an_ip_does_not_leak_the_internal_name():
+    """
+    The worst version of the old behaviour: an internal hostname filed under the
+    wrong type went out in full, telling a third party the internal naming
+    convention. Nothing in the private-address checks caught it, because it was
+    never an address.
+    """
+    with pytest.raises(ti.SkipReason):
+        ti.assert_disclosable("dc01.corp.internal", "IP Address")
+
+
+@pytest.mark.parametrize("value,ioc_type", [
+    ("d41d8cd98f00b204e9800998ecf8427e", "File Hash MD5"),
+    ("da39a3ee5e6b4b0d3255bfef95601890afd80709", "File Hash SHA1"),
+    ("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+     "File Hash SHA256"),
+])
+def test_a_well_formed_digest_still_goes_out(value, ioc_type):
+    """
+    Failing closed must not fail shut. A digest never parses as an address, so a
+    naive "not an address means refuse" would have stopped every hash lookup in
+    the product — which is the exact symptom this work started from.
+    """
+    ti.assert_disclosable(value, ioc_type)
+
+
+def test_a_digest_of_the_wrong_length_for_its_algorithm_is_refused():
+    """An MD5 filed as SHA-256 is a mislabel, and the message says which."""
+    with pytest.raises(ti.SkipReason) as exc:
+        ti.assert_disclosable("d41d8cd98f00b204e9800998ecf8427e", "File Hash SHA256")
+    assert "64 hex" in str(exc.value)
+
+
+def test_the_refusal_is_a_skip_not_an_error(monkeypatch):
+    """
+    It stays on the "we declined" side of the ledger, not the "it broke" side.
+    Nothing failed — CAIRN read the value, could not clear it, and held it.
+    """
+    result = ti.lookup_one(ti.PROVIDERS["abuseipdb"],
+                           "10.0.0.5 10.0.0.6", "IP Address", "k")
+    assert result["status"] == "skipped"
+    assert result["error"] is None

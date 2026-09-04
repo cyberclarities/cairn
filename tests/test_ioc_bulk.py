@@ -279,3 +279,67 @@ def test_a_viewer_cannot_bulk_add(app):
     assert r.status_code == 403
     with app.app_context():
         assert IOC.query.filter_by(case_id=cid).count() == 0
+
+
+# ---------------------------------------------------------------------------
+# Whitespace-separated lists
+# ---------------------------------------------------------------------------
+#
+# Reported as "when IP addresses are added as a list, they show up as one IOC".
+# A block copied out of a PDF or across a spreadsheet row arrives space- or
+# tab-separated, and only newlines, commas and semicolons were being split on.
+#
+# The damage is worse than untidy. One row holding "10.0.0.5 10.0.0.6" is a
+# value that matches no type at all, so everything downstream that reasons about
+# the type is reasoning about a fiction — including the disclosure guard.
+
+import pytest as _pytest
+
+from app.common import parse_ioc_block as _parse
+
+
+@_pytest.mark.parametrize("sep", [" ", "\t", "   ", " \t "])
+def test_a_run_of_addresses_on_one_line_becomes_one_row_each(sep):
+    rows = _parse(sep.join(["45.83.64.1", "104.18.32.7", "8.8.4.4"]))
+    assert rows == ["45.83.64.1", "104.18.32.7", "8.8.4.4"]
+
+
+def test_separators_can_be_mixed_in_one_paste():
+    rows = _parse("45.83.64.1 104.18.32.7\n8.8.4.4, 1.0.0.1|9.9.9.9")
+    assert rows == ["45.83.64.1", "104.18.32.7", "8.8.4.4", "1.0.0.1", "9.9.9.9"]
+
+
+def test_hashes_and_urls_split_on_whitespace_too():
+    assert len(_parse("d41d8cd98f00b204e9800998ecf8427e "
+                      "5d41402abc4b2a76b9719d911017c592")) == 2
+    assert len(_parse("https://a.example/x https://b.example/y")) == 2
+
+
+def test_a_value_that_legitimately_contains_spaces_is_left_alone():
+    """
+    C:\\Program Files\\evil.exe is one indicator, not three. Splitting every line
+    on whitespace would destroy file paths, registry keys and account names —
+    all of them types CAIRN offers.
+
+    The rule is not a list of which types may contain spaces. A chunk splits only
+    when every piece it would produce is itself a recognisable indicator, so this
+    one stays whole because "Files\\evil.exe" recognises as nothing.
+    """
+    assert _parse(r"C:\Program Files\evil.exe") == [r"C:\Program Files\evil.exe"]
+    assert _parse("HKLM\\Software\\Bad Key\\Run") == ["HKLM\\Software\\Bad Key\\Run"]
+    assert _parse("CORP\\service account") == ["CORP\\service account"]
+
+
+def test_a_sentence_containing_an_address_is_not_shredded():
+    """
+    Prose pasted by accident stays one row for the analyst to see and fix. Pulling
+    the address out of it would be inference, and the review page exists precisely
+    so CAIRN does not infer.
+    """
+    assert _parse("The attacker used 8.8.4.4 as C2") == \
+        ["The attacker used 8.8.4.4 as C2"]
+
+
+def test_a_path_and_a_list_in_one_paste_are_handled_per_line():
+    rows = _parse("C:\\Program Files\\evil.exe\n8.8.4.4 1.0.0.1")
+    assert rows == ["C:\\Program Files\\evil.exe", "8.8.4.4", "1.0.0.1"]

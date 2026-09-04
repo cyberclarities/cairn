@@ -239,24 +239,58 @@ def parse_ioc_block(text):
     already use, so a paste from a threat report or a spreadsheet column works
     without reformatting.
 
-    Commas and semicolons are treated as line breaks too. A list copied out of a
-    report is as likely to arrive comma-separated as newline-separated, and
-    splitting on them costs nothing: no indicator type CAIRN recognises contains
-    either character.
+    Commas, semicolons and pipes are treated as line breaks too. A list copied
+    out of a report is as likely to arrive comma-separated as newline-separated,
+    and splitting on them costs nothing: no indicator type CAIRN recognises
+    contains any of those characters.
+
+    Whitespace inside a chunk is a harder call, and it is made per chunk rather
+    than globally. A block of addresses pasted out of a PDF or a spreadsheet row
+    arrives space- or tab-separated and has to come apart, or the whole list
+    lands as one indicator — which is not merely untidy: a single row holding
+    "10.0.0.5 10.0.0.6" is a value that matches no type, and everything
+    downstream that reasons about the type is then reasoning about a fiction.
+
+    But some indicator types legitimately contain spaces. C:\\Program Files\\evil.exe
+    is one value, not three, and splitting it would destroy it.
+
+    So a chunk is only split on whitespace when every piece it would produce is
+    itself a recognisable indicator. "8.8.8.8 1.1.1.1" splits; the file path does
+    not, because "Files\\evil.exe" recognises as nothing. The rule needs no list
+    of which types may contain spaces, and it fails toward leaving the analyst's
+    text alone.
     """
     if not text:
         return []
     seen, out = set(), []
-    for chunk in re.split(r"[\n\r,;]+", text):
-        v = chunk.strip().strip("\"'")
-        if not v:
-            continue
-        key = v.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(v[:1024])
+    for chunk in re.split(r"[\n\r,;|]+", text):
+        for v in _split_if_all_indicators(chunk):
+            v = v.strip().strip("\"'")
+            if not v:
+                continue
+            key = v.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(v[:1024])
     return out
+
+
+def _split_if_all_indicators(chunk):
+    """
+    Break *chunk* on whitespace, but only if doing so yields nothing but
+    recognisable indicators. Otherwise hand back the chunk untouched.
+    """
+    stripped = chunk.strip()
+    if not stripped:
+        return []
+    pieces = stripped.split()
+    if len(pieces) < 2:
+        return [stripped]
+    cleaned = [p.strip().strip("\"'") for p in pieces]
+    if all(detect_ioc_type(p) for p in cleaned if p):
+        return cleaned
+    return [stripped]
 
 
 def normalize_asset_name(name):

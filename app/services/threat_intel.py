@@ -30,6 +30,7 @@ this module keeps out of the way.
 import ipaddress
 import json
 import logging
+import re
 from urllib.parse import urlparse
 
 import requests
@@ -50,6 +51,23 @@ USER_AGENT = "CAIRN-IR/1.0 (+https://github.com/cyberclarities/cairn)"
 # the case half enriched, with the failures indistinguishable from clean
 # answers at a glance. Batches keep the rows honest.
 BATCH_MAX = 25
+
+
+# Indicator types the guard and the providers reason about by shape rather than
+# by label. Declared here, above assert_disclosable, because the guard needs them
+# to tell "this is a name" from "this claims to be an address and is not".
+HASH_TYPES = ("File Hash MD5", "File Hash SHA1", "File Hash SHA256")
+IP_TYPES = ("IP Address", "IPv6 Address")
+
+# Hex length per digest. Used to clear a hash on its own terms — a digest never
+# parses as an address, so "not an address" says nothing about whether it is a
+# well-formed hash.
+HASH_LENGTHS = {
+    "File Hash MD5": 32,
+    "File Hash SHA1": 40,
+    "File Hash SHA256": 64,
+}
+_HEX_ONLY = re.compile(r"[0-9a-fA-F]+")
 
 
 class SkipReason(Exception):
@@ -97,8 +115,43 @@ def assert_disclosable(value, ioc_type):
     try:
         addr = ipaddress.ip_address(host)
     except ValueError:
-        # A name, not an address. Bare hostnames with no dot are internal by
-        # convention and there is nothing public to learn about them.
+        # Not an address. What that means depends entirely on what the indicator
+        # claims to be, and getting this wrong is how the guard leaks.
+        #
+        # This used to `return` here for every type, which meant a value typed as
+        # an IP address that did not parse as one was waved through. That is not
+        # a rare shape: a pasted list that failed to split arrives as
+        # "10.0.0.5 10.0.0.6" in a single row, and a mistyped host arrives as
+        # "dc01.corp.internal" filed under IP Address. Both were sent. Internal
+        # addressing left the building through the one function whose entire job
+        # is stopping it.
+        #
+        # An indicator that does not match its declared type is now refused. The
+        # guard cannot reason about a value it cannot parse, and a guard that
+        # cannot reason must not disclose. Fixing the value is an edit away and
+        # the message says so; an address that has already been sent cannot be
+        # recalled.
+        if ioc_type in IP_TYPES:
+            raise SkipReason(
+                f"'{host}' is filed as an IP address but is not one. It was not "
+                f"sent — a value the guard cannot read is a value it cannot "
+                f"clear. Correct the indicator, or split it if it holds more "
+                f"than one address."
+            )
+        if ioc_type in HASH_TYPES:
+            # A digest is never parseable as an address, so reaching here is the
+            # normal path for a hash, not an error. Validate it on its own terms:
+            # the right number of hex characters for the algorithm it claims.
+            expected = HASH_LENGTHS[ioc_type]
+            if len(host) == expected and _HEX_ONLY.fullmatch(host):
+                return
+            raise SkipReason(
+                f"'{host[:64]}' is filed as {ioc_type}, which is {expected} hex "
+                f"characters — this is {len(host)}. It was not sent; a value the "
+                f"guard cannot read is a value it cannot clear."
+            )
+        # A name. Bare hostnames with no dot are internal by convention and
+        # there is nothing public to learn about them.
         if ioc_type in ("Domain", "URL") and "." not in host:
             raise SkipReason(
                 f"'{host}' is not a public name — not sent."
@@ -186,10 +239,6 @@ VERDICT_MALICIOUS = "malicious"
 VERDICT_SUSPICIOUS = "suspicious"
 VERDICT_BENIGN = "benign"
 VERDICT_UNKNOWN = "unknown"
-
-HASH_TYPES = ("File Hash MD5", "File Hash SHA1", "File Hash SHA256")
-IP_TYPES = ("IP Address", "IPv6 Address")
-
 
 class Provider:
     """
