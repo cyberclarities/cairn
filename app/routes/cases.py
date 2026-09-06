@@ -1,6 +1,6 @@
 from flask import (
     Blueprint, render_template, redirect, url_for, flash,
-    request, abort, jsonify, current_app,
+    request, abort, jsonify, current_app, session,
 )
 from flask_login import login_required, current_user
 
@@ -206,6 +206,16 @@ def detail(case_id_int):
         for row in rows:
             ti_by_ioc.setdefault(row.ioc_id, []).append(row)
 
+    # Carried-over values from "Save & Add Another", if the last action was one.
+    #
+    # Popped, so a refresh or a later visit does not reopen the form. Checked
+    # against this case: the stash is per-session, and an analyst who saves on
+    # one case and then opens another must not find that case's form half filled
+    # with the previous one's context.
+    prefill = session.pop("timeline_prefill", None)
+    if prefill and prefill.get("case_id") != case.id:
+        prefill = None
+
     # Report tab: IMP severity classification is computed, never stored —
     # it's derived fresh from the two impact axes every time so it can never
     # go stale relative to them. See app/services/report_builder.py.
@@ -244,6 +254,7 @@ def detail(case_id_int):
     return render_template(
         "cases/detail.html",
         case=case,
+        timeline_prefill=prefill,
         ti_providers=ti_providers,
         ti_available=ti_available,
         ti_unconfigured=ti_unconfigured,

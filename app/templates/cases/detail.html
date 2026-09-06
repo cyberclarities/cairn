@@ -1295,11 +1295,29 @@
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        {#
+          Save & Add Another reopens this form with the run's context intact —
+          date, timezone, category, colour, tag, source artifact, affected
+          assets and parent. Time, description, MITRE and IOC links are cleared,
+          because a carried-over description is worse than an empty one: it
+          looks filled in and saves as a fact nobody asserted.
+        #}
+        <button type="submit" name="save_and_add_another" value="1"
+                class="btn btn-outline-danger btn-sm">
+          Save &amp; Add Another
+        </button>
         <button type="submit" class="btn btn-danger btn-sm">Add Event</button>
       </div>
     </form>
   </div>
 </div>
+
+{% if timeline_prefill %}
+{# Single-quoted attribute: |tojson escapes the single quote, so nothing in
+   these values can close it. Same pattern as the event edit data above. #}
+<div id="timelinePrefill" class="d-none"
+     data-prefill='{{ timeline_prefill|tojson }}'></div>
+{% endif %}
 
 <!-- EDIT TIMELINE EVENT MODAL -->
 <div class="modal fade" id="editEventModal" tabindex="-1">
@@ -1540,6 +1558,50 @@ document.addEventListener('DOMContentLoaded', () => {
     if (tab) new bootstrap.Tab(tab).show();
   }
 });
+
+// Reopen the Add Event form after "Save & Add Another", with the run's context
+// restored. The server decides what carries; this only puts it back on screen.
+(function () {
+  const holder = document.getElementById('timelinePrefill');
+  if (!holder) return;
+
+  let data;
+  try { data = JSON.parse(holder.dataset.prefill); } catch (e) { return; }
+
+  const modal = document.getElementById('addEventModal');
+  if (!modal) return;
+
+  const set = (name, value) => {
+    const el = modal.querySelector('[name="' + name + '"]');
+    if (el && value) el.value = value;
+  };
+  ['event_date', 'event_timezone', 'category', 'confidence', 'tag',
+   'source_artifact', 'parent_id'].forEach(n => set(n, data[n]));
+
+  if (data.color_slot) {
+    const radio = modal.querySelector('[name="color_slot"][value="' + data.color_slot + '"]');
+    if (radio) radio.checked = true;
+  }
+  if (Array.isArray(data.affected_assets) && data.affected_assets.length) {
+    const sel = modal.querySelector('[name="affected_assets"]');
+    if (sel) Array.from(sel.options).forEach(o => {
+      o.selected = data.affected_assets.indexOf(o.value) !== -1;
+    });
+  }
+
+  // The timeline tab has to be showing, or the modal opens over the Overview.
+  const tab = document.getElementById('timeline-tab');
+  if (tab && window.bootstrap) bootstrap.Tab.getOrCreateInstance(tab).show();
+
+  const dlg = bootstrap.Modal.getOrCreateInstance(modal);
+  dlg.show();
+  // Land the cursor where the next entry actually starts.
+  modal.addEventListener('shown.bs.modal', function once() {
+    const t = modal.querySelector('[name="event_time"]');
+    if (t) t.focus();
+    modal.removeEventListener('shown.bs.modal', once);
+  });
+})();
 
 // "Top" on the sticky timeline bar. Scrolls back to the start of the timeline
 // tab rather than the top of the page, so the tab strip stays put.

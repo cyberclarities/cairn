@@ -1,4 +1,4 @@
-from flask import Blueprint, request, redirect, url_for, flash, abort, current_app
+from flask import Blueprint, request, redirect, url_for, flash, abort, current_app, session
 from flask_login import login_required, current_user
 
 from app.common import (
@@ -72,7 +72,27 @@ def _valid_iocs(case, raw_ids):
 
 
 def _valid_assets(case, raw_values):
-    available = set(parse_affected_systems(case.affected_systems))
+    """
+    Keep only the asset names this case actually offers.
+
+    The allowed set has to be the same one the picker is built from, and it was
+    not. When the Asset entity landed, cases.detail() started offering the case's
+    linked assets alongside anything still in the legacy affected_systems text —
+    but this validator kept checking the legacy text alone. So an asset attached
+    properly, through the Assets tab, appeared in the picker, was selected by the
+    analyst, and was dropped on save. Silently: this returns None, the event
+    saves, and nothing says the asset went missing.
+
+    Found while testing Save & Add Another, which carries the selection forward
+    and therefore carried forward an empty one every time.
+
+    Kept as one expression shared with the picker's source rather than two lists
+    that agree today. The comment above asset_options in cases.py explains why
+    the stored value stays a text snapshot rather than a foreign key.
+    """
+    available = {a.name for a in case.assets} | set(
+        parse_affected_systems(case.affected_systems)
+    )
     selected = [v for v in raw_values if v in available]
     return "\n".join(selected) if selected else None
 
@@ -127,7 +147,37 @@ def add_event(case_id_int):
     )
 
     db.session.commit()
-    flash("Timeline event added.", "success")
+
+    # "Save & Add Another" — reopen the form with the context carried over.
+    #
+    # Building a timeline is a run, not a single act: an analyst works through
+    # one log source, on one day, for one host, and enters six events from it.
+    # Re-picking the date, timezone, source artifact and affected asset every
+    # time is the tax that makes people batch it up for later, and later is when
+    # detail goes missing.
+    #
+    # What carries is what stays true across a run. What identifies the
+    # individual event — the time, the description, the MITRE mapping and any
+    # IOC links — is deliberately cleared, because a carried-over description is
+    # far worse than an empty one: it looks like a filled-in field and saves as
+    # a fact nobody asserted.
+    if f.get("save_and_add_another"):
+        session["timeline_prefill"] = {
+            "case_id": case.id,
+            "event_date": f.get("event_date", ""),
+            "event_timezone": tz_name or "UTC",
+            "category": ev.category or "",
+            "confidence": ev.confidence or "",
+            "color_slot": str(ev.color_slot) if ev.color_slot else "",
+            "tag": ev.tag or "",
+            "source_artifact": ev.source_artifact or "",
+            "affected_assets": ev.affected_assets_list,
+            "parent_id": str(ev.parent_id) if ev.parent_id else "",
+        }
+        flash(f"Event added at {ev.event_datetime.strftime('%Y-%m-%d %H:%M')} UTC. "
+              f"Add the next one.", "success")
+    else:
+        flash("Timeline event added.", "success")
     return redirect(url_for("cases.detail", case_id_int=case.id) + "#timeline")
 
 
