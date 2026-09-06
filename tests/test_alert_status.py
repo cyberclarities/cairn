@@ -400,3 +400,146 @@ def test_the_old_one_way_bulk_dismiss_route_is_gone(app):
     path now, so they cannot drift again.
     """
     assert not any(r.endpoint == "alerts.bulk_dismiss" for r in app.url_map.iter_rules())
+
+
+# ---------------------------------------------------------------------------
+# The Move menus have to survive an HTML parser
+# ---------------------------------------------------------------------------
+#
+# Reported as "does not seem to allow dismissal of alerts", and everything
+# server-side was fine — bulk_status and set_status both worked when posted to
+# directly. The menus that reach them were dead HTML.
+#
+# Both were written as onclick="cairnMoveAlert({{ a.id }}, {{ s|tojson }}, ...)".
+# The tojson filter emits real double quotes, and inside a double-quoted
+# attribute the first one ENDS the attribute — the browser received
+# onclick="cairnMoveAlert(" and treated the rest as stray attributes. Every entry
+# in both menus was inert, and it failed in total silence: a truncated attribute
+# is not a JavaScript error, so nothing appeared in the console.
+#
+# The tests below parse the rendered page with a real HTML parser rather than
+# grepping the template source, because the template source looked correct. Only
+# the parsed markup shows the attribute ending early.
+
+from html.parser import HTMLParser
+
+
+class _ButtonScan(HTMLParser):
+    """Collect the data-* payload of every element carrying a given class."""
+
+    def __init__(self, wanted_class):
+        super().__init__()
+        self.wanted = wanted_class
+        self.found = []
+
+    def handle_starttag(self, tag, attrs):
+        d = dict(attrs)
+        if self.wanted in (d.get("class") or "").split():
+            self.found.append(d)
+
+
+def _scan(body, css_class):
+    p = _ButtonScan(css_class)
+    p.feed(body)
+    return p.found
+
+
+def _queue(app, client):
+    return client.get("/alerts/", follow_redirects=True).get_data(as_text=True)
+
+
+def test_the_bulk_move_menu_reaches_the_browser_intact(app):
+    """
+    Three entries — New, Reviewing, Dismissed — each carrying its target status.
+    Before the fix a parser saw a button with no data at all, because the
+    attribute carrying it had already been terminated.
+    """
+    _alert(app, status="new")
+    client = _client(app)
+    items = _scan(_queue(app, client), "js-bulk-move")
+
+    statuses = {i.get("data-status") for i in items}
+    assert statuses == {"new", "reviewing", "dismissed"}
+    assert all(i.get("data-label") for i in items)
+
+
+def test_the_per_row_move_menu_reaches_the_browser_intact(app):
+    """Dismissing one alert from the queue is the common case, and it was dead."""
+    alert_id = _alert(app, status="new")
+    client = _client(app)
+    items = _scan(_queue(app, client), "js-move-alert")
+
+    mine = [i for i in items if i.get("data-alert-id") == str(alert_id)]
+    # A new alert can move to reviewing or dismissed, not to its own status.
+    assert {i.get("data-status") for i in mine} == {"reviewing", "dismissed"}
+
+
+def test_no_move_control_smuggles_data_through_an_onclick(app):
+    """
+    The rule, not the instance. Any template value inside a JS string literal in
+    an attribute is one apostrophe or one tojson away from this bug, and it
+    breaks silently every time.
+    """
+    _alert(app, status="new")
+    client = _client(app)
+    body = _queue(app, client)
+
+    markup = body.split("<script")[0]
+    assert "cairnMoveAlert(" not in markup
+    assert "cairnOpenBulkMove(" not in markup
+
+
+def test_a_promoted_alert_carries_its_case_id_to_the_confirm_prompt(app):
+    """
+    The case ID is the value that made this dangerous rather than merely broken:
+    it is free text from the case record, sitting in a JS string literal.
+    """
+    from app.models import Alert, Case, db
+
+    with app.app_context():
+        case = Case(case_id="AQ-" + uuid.uuid4().hex[:6], title="promoted",
+                    severity="High", status="Open", escalated=False,
+                    board_flagged=False)
+        db.session.add(case)
+        db.session.commit()
+        alert_id = _alert(app, status="new")
+        a = db.session.get(Alert, alert_id)
+        a.status = "promoted"
+        a.case_id = case.id
+        db.session.commit()
+        case_label = case.case_id
+
+    client = _client(app)
+    # The queue defaults to the New tab; a promoted alert lives on its own.
+    body = client.get("/alerts/?status=promoted",
+                      follow_redirects=True).get_data(as_text=True)
+    items = _scan(body, "js-move-alert")
+    mine = [i for i in items if i.get("data-alert-id") == str(alert_id)]
+    assert mine, "promoted alert has no move menu"
+    assert all(i.get("data-promoted") == "1" for i in mine)
+    assert all(i.get("data-case") == case_label for i in mine)
+
+
+def test_bulk_dismiss_works_end_to_end_through_the_field_the_page_sends(app):
+    """
+    The checkbox name and the field the route reads must agree. They do — the
+    break was never here — but nothing pinned it, and a rename on either side
+    would reproduce the same silent nothing-happens.
+    """
+    from app.models import Alert, db
+
+    a1, a2 = _alert(app, status="new"), _alert(app, status="new")
+    client = _client(app)
+
+    body = _queue(app, client)
+    names = {d.get("name") for d in _scan(body, "alert-check")}
+    assert names == {"alert_ids"}
+
+    r = client.post("/alerts/bulk-status",
+                    data={"alert_ids": [str(a1), str(a2)],
+                          "status": "dismissed", "reason": "False positive"},
+                    follow_redirects=True)
+    assert b"moved to Dismissed" in r.data
+    with app.app_context():
+        assert db.session.get(Alert, a1).status == "dismissed"
+        assert db.session.get(Alert, a2).status == "dismissed"

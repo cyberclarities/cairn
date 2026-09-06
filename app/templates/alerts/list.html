@@ -112,8 +112,19 @@
             <li><h6 class="dropdown-header small">Move selected to</h6></li>
             {% for s in settable_statuses %}
             <li>
-              <button type="button" class="dropdown-item small"
-                      onclick="cairnOpenBulkMove({{ s|tojson }}, {{ status_labels[s]|tojson }})">
+              {#
+                data-* attributes, not an onclick.
+
+                This was onclick="cairnOpenBulkMove({{ s|tojson }}, ...)". The
+                tojson filter emits real double quotes, and inside a
+                double-quoted HTML attribute the first one ENDS the attribute:
+                the browser received onclick="cairnOpenBulkMove(" followed by
+                garbage. Every entry in this menu was inert, so nothing could be
+                moved or dismissed in bulk from the queue at all — and it failed
+                silently, because a broken attribute is not a JavaScript error.
+              #}
+              <button type="button" class="dropdown-item small js-bulk-move"
+                      data-status="{{ s }}" data-label="{{ status_labels[s] }}">
                 {{ status_labels[s] }}
               </button>
             </li>
@@ -198,8 +209,11 @@
                     {% for s in settable_statuses %}
                       {% if s != a.status %}
                       <li>
-                        <button type="button" class="dropdown-item small"
-                                onclick="cairnMoveAlert({{ a.id }}, {{ s|tojson }}, {{ (a.status == 'promoted')|tojson }}, {{ (a.case.case_id if a.case else '')|tojson }})">
+                        <button type="button" class="dropdown-item small js-move-alert"
+                                data-alert-id="{{ a.id }}"
+                                data-status="{{ s }}"
+                                data-promoted="{{ '1' if a.status == 'promoted' else '' }}"
+                                data-case="{{ a.case.case_id if a.case else '' }}">
                           {{ status_labels[s] }}
                         </button>
                       </li>
@@ -418,6 +432,25 @@ const CAIRN_CSRF = {{ csrf_token()|tojson }};
     });
   });
 })();
+
+// Both dropdowns are bound here rather than through onclick attributes.
+//
+// Delegated, so the handlers survive anything that re-renders rows, and the
+// values arrive through dataset where attribute escaping actually applies to
+// attribute content. An alert's case ID reaching a JavaScript string literal was
+// the whole reason these were dead.
+document.addEventListener('click', function (ev) {
+  var bulk = ev.target.closest('.js-bulk-move');
+  if (bulk) {
+    cairnOpenBulkMove(bulk.dataset.status, bulk.dataset.label);
+    return;
+  }
+  var row = ev.target.closest('.js-move-alert');
+  if (row) {
+    cairnMoveAlert(row.dataset.alertId, row.dataset.status,
+                   row.dataset.promoted === '1', row.dataset.case || '');
+  }
+});
 
 // Move an alert to another status.
 //

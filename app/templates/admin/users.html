@@ -44,8 +44,20 @@
           <td class="small text-muted">{{ u.last_login.strftime('%Y-%m-%d %H:%M') if u.last_login else 'Never' }}</td>
           <td class="small">{{ 'Yes' if u.is_sso_user else '—' }}</td>
           <td class="text-end pe-3">
-            <button class="btn btn-sm btn-outline-secondary py-0 px-2"
-                    onclick="openEditUser({{ u.id }},'{{ u.username }}','{{ u.email|e }}','{{ u.name|e }}','{{ u.role }}')">
+            {#
+              Same defect class as the alert Move menus and the IOC Edit button:
+              user-supplied text inside a JavaScript string literal in an
+              attribute. |e turns an apostrophe into &#39;, which the HTML parser
+              decodes back to a bare quote before the JS is parsed — so a name
+              like O'Brien breaks this button with nothing on screen to say why.
+            #}
+            <button class="btn btn-sm btn-outline-secondary py-0 px-2 js-edit-user"
+                    type="button"
+                    data-id="{{ u.id }}"
+                    data-username="{{ u.username }}"
+                    data-email="{{ u.email }}"
+                    data-name="{{ u.name }}"
+                    data-role="{{ u.role }}">
               <i class="bi bi-pencil"></i>
             </button>
             {% if u.id != current_user.id %}
@@ -149,6 +161,13 @@
 
 {% block extra_js %}
 <script>
+document.addEventListener('click', function (ev) {
+  var btn = ev.target.closest('.js-edit-user');
+  if (!btn) return;
+  var d = btn.dataset;
+  openEditUser(d.id, d.username, d.email, d.name, d.role);
+});
+
 function openEditUser(id, username, email, name, role) {
   document.getElementById('editUserForm').action = `/admin/users/${id}/edit`;
   document.getElementById('editUsername').value = username;
