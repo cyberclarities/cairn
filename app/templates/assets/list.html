@@ -59,10 +59,21 @@
     <span class="fw-semibold small">{{ assets|length }} asset{{ 's' if assets|length != 1 else '' }}</span>
     <span class="small text-muted">Assets are attached from a case page</span>
   </div>
+  <form method="POST" action="{{ url_for('assets.bulk_delete_assets') }}"
+        id="assetBulkForm"
+        onsubmit="return confirmBulkDelete();">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <div class="table-responsive">
     <table class="table table-sm table-hover mb-0 align-middle">
       <thead>
         <tr>
+          {% if current_user.is_analyst %}
+          {# Only rows with no case links get a checkbox. The bulk route re-checks
+             every id server-side — this is here so the page cannot offer an
+             action it will then refuse. #}
+          <th style="width:1%"><input type="checkbox" class="form-check-input"
+                                      id="assetSelectAll" title="Select all deletable"></th>
+          {% endif %}
           <th>Name</th><th>Type</th><th>Criticality</th><th>Owner</th>
           <th class="text-end">Cases</th><th></th>
         </tr>
@@ -70,6 +81,14 @@
       <tbody>
         {% for a in assets %}
         <tr {% if not a.is_active %}class="text-muted"{% endif %}>
+          {% if current_user.is_analyst %}
+          <td>
+            {% if not case_counts.get(a.id, 0) %}
+            <input type="checkbox" class="form-check-input asset-select"
+                   name="asset_id" value="{{ a.id }}">
+            {% endif %}
+          </td>
+          {% endif %}
           <td>
             <a href="{{ url_for('assets.asset_detail', asset_id=a.id) }}">{{ a.name }}</a>
             {% if not a.is_active %}<span class="badge bg-secondary ms-1">Retired</span>{% endif %}
@@ -87,12 +106,55 @@
           </td>
         </tr>
         {% else %}
-        <tr><td colspan="6" class="text-center text-muted py-4">
+        <tr><td colspan="7" class="text-center text-muted py-4">
           No assets match. Assets are created by attaching them to a case.
         </td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
+
+  {% if current_user.is_analyst %}
+  <div class="p-3 border-top">
+    <button type="submit" class="btn btn-sm btn-outline-danger" id="assetBulkBtn" disabled>
+      <i class="bi bi-trash"></i> Delete selected
+    </button>
+    <span class="small text-muted ms-2">
+      Only assets on no case can be selected. One that a case references is kept
+      whatever is submitted — deleting it would remove it from that case and from
+      any report built from it. Retire it, or merge it into the asset it
+      duplicates, from its own page.
+    </span>
+  </div>
+  {% endif %}
+  </form>
 </div>
+
+{% if current_user.is_analyst %}
+<script>
+  (function () {
+    const all = document.getElementById('assetSelectAll');
+    const btn = document.getElementById('assetBulkBtn');
+    const boxes = () => Array.from(document.querySelectorAll('.asset-select'));
+    function sync() {
+      if (btn) btn.disabled = !boxes().some(b => b.checked);
+    }
+    if (all) {
+      all.addEventListener('change', function () {
+        boxes().forEach(b => { b.checked = all.checked; });
+        sync();
+      });
+    }
+    boxes().forEach(b => b.addEventListener('change', sync));
+    sync();
+  })();
+
+  function confirmBulkDelete() {
+    const n = document.querySelectorAll('.asset-select:checked').length;
+    if (!n) return false;
+    return confirm('Delete ' + n + ' asset' + (n === 1 ? '' : 's') +
+                   '? This cannot be undone.');
+  }
+</script>
+{% endif %}
 {% endblock %}

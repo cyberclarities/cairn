@@ -135,10 +135,25 @@ def asset_detail(asset_id):
         .order_by(Case.opened_date.desc())
         .all()
     )
+    # Everything this asset could be merged into, with the case count for each so
+    # the picker shows which record is the established one. Retired assets are
+    # included: a duplicate is very often the row somebody retired instead of
+    # cleaning up, and merging into it is exactly what should happen.
+    candidates = (
+        Asset.query.filter(Asset.id != asset.id).order_by(Asset.name).all()
+    )
+    merge_counts = dict(
+        db.session.query(CaseAsset.asset_id, db.func.count(CaseAsset.id))
+        .group_by(CaseAsset.asset_id)
+        .all()
+    )
+
     return render_template(
         "assets/detail.html",
         asset=asset,
         links=links,
+        merge_candidates=candidates,
+        merge_counts=merge_counts,
         asset_types=_active("asset_type"),
         criticalities=_active("asset_criticality"),
     )
@@ -152,9 +167,10 @@ def edit_asset(asset_id):
     Update an asset's own attributes. Every change is audited.
 
     Renaming recomputes the dedupe key, which can collide with an asset that
-    already exists. That is refused rather than merged — merging two assets means
-    deciding which case links survive, and that is a decision for a person with
-    the incidents in front of them, not for a rename handler.
+    already exists. That is still refused here rather than merged silently — a
+    rename handler is the wrong place to decide the fate of another record's case
+    links. But merge_asset() now exists, so the refusal points at it instead of
+    telling the analyst to sort it out by hand.
     """
     asset = db.get_or_404(Asset, asset_id)
     f = request.form
@@ -172,9 +188,10 @@ def edit_asset(asset_id):
         if clash:
             flash(
                 f"An asset named \"{clash.name}\" already exists and would be the "
-                f"same record under this name. Rename one of them to something "
-                f"that tells them apart, or link cases to the existing asset "
-                f"instead — CAIRN will not merge two assets for you.",
+                f"same record under this name. If they are the same machine, "
+                f"merge this one into it — the case links move across and nothing "
+                f"is lost. If they are genuinely different, give this one a name "
+                f"that tells them apart, such as a fully qualified hostname.",
                 "danger",
             )
             return redirect(url_for("assets.asset_detail", asset_id=asset.id))
@@ -312,3 +329,248 @@ def remove_case_asset(case_id_int, link_id):
     flash(f"{name} detached from this case. The asset record itself is unchanged.",
           "warning")
     return redirect(url_for("cases.detail", case_id_int=case.id) + "#assets")
+
+
+# ---------------------------------------------------------------------------
+# Removing assets: delete, bulk delete, merge
+# ---------------------------------------------------------------------------
+#
+# One rule governs all three, and it is the reason they can stay at analyst
+# level rather than admin: an asset that is attached to a case is never deleted.
+#
+# Assets outlive cases. A closed case's Assets tab, and the AAR built from it,
+# name assets by row — so deleting one that a case references does not tidy the
+# catalogue, it edits the history of an incident that has already been reported.
+# Retiring exists for that: the asset stops appearing in pickers and searches
+# and stays resolvable for every case that cites it.
+#
+# Merge is the exception that proves it. It also removes an asset, but it moves
+# the case links first, so no case loses an asset — the surviving record is
+# simply the right one.
+
+def _link_count(asset):
+    return CaseAsset.query.filter_by(asset_id=asset.id).count()
+
+
+@assets_bp.route("/assets/<int:asset_id>/delete", methods=["POST"])
+@login_required
+@analyst_required
+def delete_asset(asset_id):
+    """
+    Delete an asset that no case references.
+
+    The link check is here and not only in the template. The button is hidden
+    for a linked asset, but a hidden button is a courtesy, not a control — a
+    stale page or a hand-crafted POST reaches this either way, and case_assets
+    carries ON DELETE CASCADE, so an unguarded delete would take the links with
+    it silently.
+    """
+    asset = db.get_or_404(Asset, asset_id)
+    linked = _link_count(asset)
+    if linked:
+        flash(
+            f"\"{asset.name}\" is on {linked} case{'s' if linked != 1 else ''} and "
+            f"was not deleted. Deleting it would remove it from those cases and "
+            f"from any report built from them. Retire it instead — it stops "
+            f"appearing in pickers and stays readable on the cases that cite it. "
+            f"To remove it from one case, use the Assets tab on that case.",
+            "danger",
+        )
+        return redirect(url_for("assets.asset_detail", asset_id=asset.id))
+
+    name = asset.name
+    log_event("asset", asset.id, "deleted",
+              old_value=f"{name} ({asset.type_label})",
+              detail="no case links")
+    db.session.delete(asset)
+    db.session.commit()
+    flash(f"Asset \"{name}\" deleted.", "warning")
+    return redirect(url_for("assets.list_assets"))
+
+
+@assets_bp.route("/assets/bulk-delete", methods=["POST"])
+@login_required
+@analyst_required
+def bulk_delete_assets():
+    """
+    Delete the selected assets, skipping any that a case references.
+
+    Written for the backfill: the migration parsed cases.affected_systems, which
+    was free text, so a fair amount of what it created is not an asset at all —
+    "N/A", "several laptops", "see notes". Those are unlinked or nearly so, and
+    clearing them one page at a time is why they do not get cleared.
+
+    Skipped rows are counted and named rather than silently dropped. A bulk
+    action that half-works and says "done" is worse than one that refuses.
+    """
+    try:
+        ids = {int(v) for v in request.form.getlist("asset_id")}
+    except ValueError:
+        abort(400)
+    if not ids:
+        flash("Select at least one asset.", "warning")
+        return redirect(url_for("assets.list_assets"))
+
+    assets = Asset.query.filter(Asset.id.in_(ids)).all()
+    linked_counts = dict(
+        db.session.query(CaseAsset.asset_id, db.func.count(CaseAsset.id))
+        .filter(CaseAsset.asset_id.in_(ids))
+        .group_by(CaseAsset.asset_id)
+        .all()
+    )
+
+    deleted, skipped = [], []
+    for asset in assets:
+        if linked_counts.get(asset.id):
+            skipped.append(asset)
+            continue
+        log_event("asset", asset.id, "deleted",
+                  old_value=f"{asset.name} ({asset.type_label})",
+                  detail="no case links (bulk)")
+        deleted.append(asset.name)
+        db.session.delete(asset)
+    db.session.commit()
+
+    if deleted:
+        flash(f"{len(deleted)} asset{'s' if len(deleted) != 1 else ''} deleted.",
+              "warning")
+    if skipped:
+        names = ", ".join(f"{a.name} ({linked_counts[a.id]})" for a in skipped[:8])
+        more = f" and {len(skipped) - 8} more" if len(skipped) > 8 else ""
+        flash(
+            f"{len(skipped)} kept — attached to cases, with the case count in "
+            f"brackets: {names}{more}. Retire them instead, or merge them into "
+            f"the asset they duplicate.",
+            "info",
+        )
+    if not deleted and not skipped:
+        flash("Nothing was deleted.", "warning")
+    return redirect(url_for("assets.list_assets"))
+
+
+@assets_bp.route("/assets/<int:asset_id>/merge", methods=["POST"])
+@login_required
+@analyst_required
+def merge_asset(asset_id):
+    """
+    Fold this asset into another one, then delete it.
+
+    This is the half of duplicate cleanup that deleting cannot do. "dc-01" and
+    "dc01" are one machine with two rows, and the incidents are split across
+    both; deleting either loses that case history, and renaming one to match the
+    other is refused because the dedupe key collides. Merge is what the rename
+    handler has been telling people to do by hand.
+
+    Three things have to be got right.
+
+    Case links move rather than being recreated, so added_at and added_by — who
+    first put this box in this incident, and when — survive. Where both assets
+    are already on the same case, the unique constraint means only one link can
+    remain: the target's is kept, and the source's role and notes fill any blank
+    on it rather than being thrown away. Nothing overwrites a value somebody
+    typed.
+
+    Attributes fill the same way. A blank on the target takes the source's
+    value; a value on the target stays. The merge is a repair, not a decision
+    about which record was better.
+
+    Every case that gains a link is audited against that case, so the change
+    shows up in the case's own history and not only in a global asset log. An
+    analyst opening a case months later needs to see that the asset row they are
+    looking at arrived by a merge.
+    """
+    source = db.get_or_404(Asset, asset_id)
+
+    try:
+        target_id = int(request.form.get("target_id", ""))
+    except (TypeError, ValueError):
+        flash("Choose an asset to merge into.", "danger")
+        return redirect(url_for("assets.asset_detail", asset_id=source.id))
+
+    if target_id == source.id:
+        flash("An asset cannot be merged into itself.", "danger")
+        return redirect(url_for("assets.asset_detail", asset_id=source.id))
+
+    target = Asset.query.get(target_id)
+    if target is None:
+        flash("That asset no longer exists.", "danger")
+        return redirect(url_for("assets.asset_detail", asset_id=source.id))
+
+    source_name, target_name = source.name, target.name
+
+    # Existing target links, by case, so the constraint is honoured in Python
+    # rather than discovered as an IntegrityError half way through.
+    target_by_case = {
+        link.case_id: link
+        for link in CaseAsset.query.filter_by(asset_id=target.id).all()
+    }
+
+    moved, folded = 0, 0
+    for link in CaseAsset.query.filter_by(asset_id=source.id).all():
+        existing = target_by_case.get(link.case_id)
+        if existing is None:
+            # Re-parent through the relationship, not by writing asset_id.
+            #
+            # Asset.case_links is cascade="all, delete-orphan". Setting the
+            # foreign key alone moves the row in SQL but leaves the ORM still
+            # holding the link in the source's collection, so deleting the source
+            # at the end of this function cascaded straight through and destroyed
+            # every link that had just been moved. The merge reported success and
+            # the cases lost the asset entirely — the exact outcome the whole
+            # refuse-to-delete-a-linked-asset rule exists to prevent. Assigning
+            # the relationship removes it from one collection and adds it to the
+            # other, which is what the cascade reads.
+            link.asset = target
+            target_by_case[link.case_id] = link
+            moved += 1
+            log_event("asset", target.id, "merged_onto_case",
+                      detail=f"{source_name} merged into {target_name}",
+                      case_id=link.case_id)
+        else:
+            # Both assets were on this case. Keep the target's link and salvage
+            # anything the source's link recorded that the target's does not.
+            if not existing.role and link.role:
+                existing.role = link.role
+            if link.notes:
+                existing.notes = (
+                    f"{existing.notes}\n{link.notes}" if existing.notes else link.notes
+                )
+            db.session.delete(link)
+            folded += 1
+            log_event("asset", target.id, "merge_folded_duplicate_link",
+                      detail=f"{source_name} and {target_name} were both on this "
+                             f"case; kept one link",
+                      case_id=link.case_id)
+
+    # Fill blanks on the target only. Never overwrite.
+    filled = []
+    for field in ("asset_type", "criticality", "owner", "location", "description"):
+        if not getattr(target, field) and getattr(source, field):
+            log_change(None, "asset", target.id, field,
+                       getattr(target, field), getattr(source, field))
+            setattr(target, field, getattr(source, field))
+            filled.append(field)
+
+    log_event("asset", target.id, "merge_target",
+              detail=f"absorbed \"{source_name}\": {moved} case link(s) moved, "
+                     f"{folded} duplicate link(s) folded"
+                     + (f", filled {', '.join(filled)}" if filled else ""))
+    log_event("asset", source.id, "deleted",
+              old_value=f"{source_name} ({source.type_label})",
+              detail=f"merged into \"{target_name}\"")
+
+    # Flush the moves before the delete, so the source's collection is settled
+    # and the cascade has nothing of the target's left to reach.
+    db.session.flush()
+    db.session.delete(source)
+    db.session.commit()
+
+    bits = [f"\"{source_name}\" merged into \"{target_name}\""]
+    if moved:
+        bits.append(f"{moved} case link{'s' if moved != 1 else ''} moved")
+    if folded:
+        bits.append(f"{folded} already on the same case, kept one")
+    if filled:
+        bits.append(f"filled {', '.join(filled)}")
+    flash(". ".join(bits) + ".", "success")
+    return redirect(url_for("assets.asset_detail", asset_id=target.id))
