@@ -12,6 +12,24 @@
   /* Alternating timeline: a centered vertical line, cards alternating left
      and right of it, nested events staying on their ancestor's side and
      indenting toward the centerline rather than growing off the edge. */
+  /* Sticky action bar for the timeline tab. Clears #topbar by that bar's
+     measured height — see --cairn-topbar-h in base.html — with a fallback for
+     the first paint before that script runs. z-index sits below the topbar's
+     900 so it tucks under it rather than over it. */
+  .tl2-actions {
+    position: sticky;
+    top: var(--cairn-topbar-h, 3rem);
+    z-index: 850;
+    display: flex; align-items: center; gap: 0.25rem;
+    padding: 0.6rem 0;
+    margin-bottom: 0.5rem;
+    /* The panel it sits on, not the page behind it. The tab content is
+       bg-white, so --c-body-bg left a visibly greyer strip pinned over it. */
+    background: var(--c-card-bg);
+    border-bottom: 1px solid var(--c-card-border);
+  }
+  .tl2-top { text-decoration: none; }
+
   .tl2 { position: relative; padding: 0.25rem 0 0.5rem; }
   .tl2::before {
     content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px;
@@ -588,10 +606,36 @@
 
   <!-- TIMELINE TAB -->
   <div class="tab-pane fade" id="timeline">
+    {#
+      The Add Event control sticks to the top of the viewport while the timeline
+      scrolls under it.
+
+      A timeline is as long as the incident, and the button used to sit at the
+      top of the tab only. Reading down to the eleventh event and wanting to add
+      a twelfth meant scrolling the whole way back — on a case with thirty
+      events that is the difference between recording something as you find it
+      and deciding it can wait, which is how gaps get into a timeline.
+
+      Sticky rather than a floating button: it stays in the document flow, so it
+      never covers a card, and it clears #topbar by that bar's measured height
+      (see --cairn-topbar-h in base.html) rather than a hardcoded offset.
+    #}
     {% if current_user.is_analyst %}
-    <button class="btn btn-sm btn-outline-danger mb-3" data-bs-toggle="modal" data-bs-target="#addEventModal">
-      <i class="bi bi-plus-lg"></i> Add Event
-    </button>
+    <div class="tl2-actions">
+      <button class="btn btn-sm btn-outline-danger"
+              data-bs-toggle="modal" data-bs-target="#addEventModal">
+        <i class="bi bi-plus-lg"></i> Add Event
+      </button>
+      {% if timeline_events %}
+      <span class="small text-muted ms-2">
+        {{ timeline_events|length }} event{{ 's' if timeline_events|length != 1 else '' }}
+      </span>
+      <button type="button" class="btn btn-sm btn-link text-muted ms-auto p-0 tl2-top"
+              title="Back to the top of the timeline">
+        <i class="bi bi-arrow-up-short"></i> Top
+      </button>
+      {% endif %}
+    </div>
     {% endif %}
 
     {% if timeline_display %}
@@ -1495,6 +1539,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const tab = document.querySelector(`[data-bs-target="${hash}"]`);
     if (tab) new bootstrap.Tab(tab).show();
   }
+});
+
+// "Top" on the sticky timeline bar. Scrolls back to the start of the timeline
+// tab rather than the top of the page, so the tab strip stays put.
+document.addEventListener('click', function (ev) {
+  if (!ev.target.closest('.tl2-top')) return;
+  const pane = document.getElementById('timeline');
+  if (pane) pane.scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
 // Bound from data-* attributes rather than called from an onclick, so an

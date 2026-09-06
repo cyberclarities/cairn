@@ -336,6 +336,22 @@
       });
     });
   })();
+
+  // Publish the topbar's real height as --cairn-topbar-h.
+  //
+  // #topbar is position:sticky at top:0, so anything else that wants to stick
+  // has to clear it. Hardcoding a number works until the topbar's font, padding
+  // or zoom changes, and then the sticky element either overlaps it or floats
+  // below a gap. Measuring costs one line and cannot go stale.
+  (function () {
+    const bar = document.getElementById('topbar');
+    if (!bar) return;
+    const publish = () => document.documentElement.style
+      .setProperty('--cairn-topbar-h', bar.offsetHeight + 'px');
+    publish();
+    window.addEventListener('resize', publish);
+    if (window.ResizeObserver) new ResizeObserver(publish).observe(bar);
+  })();
 </script>
 {% block extra_js %}{% endblock %}
 </body>
