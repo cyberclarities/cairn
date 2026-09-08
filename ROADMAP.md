@@ -43,10 +43,19 @@ CAIRN currently runs Gunicorn with a single worker, and enrichment calls provide
 inside the request. A batch of indicators against several providers can block the console for
 minutes. Adding providers to that arrangement does not widen coverage — it lengthens the block.
 
-- Move enrichment to a background job with a persisted queue and per-job status.
+- Move enrichment to a background job dispatched through Redis and executed by a dedicated worker
+  container. PostgreSQL stays the system of record: every job and every per-provider attempt exists
+  as a row before anything is dispatched, so a restarted Redis costs a delay rather than history.
 - Surface provider results on the case page as they land, rather than as one blocking call.
 - Raise the indicator batch cap only after the job runner is in place, not before.
-- Retry and backoff per provider, so one slow or rate-limited service does not stall a batch.
+- Retry and backoff per provider, with a circuit breaker, so one slow or rate-limited service does
+  not stall a batch.
+
+The four rules above move into the worker unaltered, and the disclosure guard runs there again
+immediately before each request is built — an indicator value can change between enqueue and
+execution.
+
+Full build specification: `docs/PHASE-1-ENRICHMENT-JOBS.md`.
 
 ## Milestone 2 — Widen enrichment coverage
 
