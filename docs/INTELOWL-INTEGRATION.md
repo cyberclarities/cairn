@@ -92,7 +92,7 @@ work asynchronously.
    evidence record.
 2. CAIRN writes an `intelowl_jobs` row with status `submitted` **before** any request is built. If
    the request then fails, the row records that it failed. It is never missing.
-3. For files: CAIRN re-hashes the stored file against `hash_sha256`. A mismatch stops the submission
+3. For files: CAIRN refuses the excluded evidence types in 9.1, then re-hashes the stored file against `hash_sha256`. A mismatch stops the submission
    and writes a custody entry, the same as a mismatched download.
 4. CAIRN posts to IntelOwl with `tlp=RED`, `analyzers_requested` set from the matching allowlist,
    and `connectors_requested` empty.
@@ -191,6 +191,68 @@ INTELOWL_JOB_TIMEOUT=1800
 The allowlists are chosen against the deployed IntelOwl instance (see 12), not copied from this
 document.
 
+### 9.1 Allowlist selections
+
+Decided 2026-11-05. Analyzer names below are candidates by category. Each one goes on an allowlist
+only after it is matched against the probe's question 5 output for the deployed instance and read
+against its configuration there. A candidate the instance does not have, or does not mark RED-safe,
+is dropped, not substituted.
+
+**File allowlist** (`INTELOWL_ANALYZERS_FILE`)
+
+| Category | Candidates |
+|---|---|
+| Signatures and AV | Yara, ClamAV |
+| Executable static | PE_Info, Capa, Floss, Signature_Info |
+| Office and PDF | Doc_Info, PDF_Info, Rtf_Info, Xlm_Macro_Deobfuscator |
+| Email | an `.eml` parser, if the instance has one marked RED-safe |
+
+Strings extraction is left off. It is noisy on large files and adds little the categories above do
+not already surface.
+
+**Observable allowlist** (`INTELOWL_ANALYZERS_OBSERVABLE`)
+
+| Category | Candidates |
+|---|---|
+| Tor and blocklists | TorProject, FireHol_IPList, TalosReputation |
+| GeoIP | MaxMindGeoIP (needs a MaxMind license key for database updates) |
+
+Internal MISP and OpenCTI lookups are not on the list.
+
+**Evidence types never offered for analysis**
+
+Disk Image, Memory Dump, Network Capture and Database Dump. None of the file analyzers above are
+built for them, and sending one is a large copy of evidence out of custody for no result. The
+button does not appear on these records, and the route refuses them if called directly.
+
+**Email/PST: single messages only**
+
+A single `.eml` message may be submitted. That is the phishing-attachment case the Office and PDF
+parsers exist for. A `.pst` or `.ost` mailbox may not; it is a whole mailbox leaving custody to
+answer a question about one message.
+
+The check is on the file, not the evidence type, because both arrive under the same type. The
+stored filename must end in `.eml` **and** the file must parse as an RFC 5322 message. Either check
+alone is too easy to satisfy by accident. Anything else filed under Email/PST shows no button and is
+refused by the route.
+
+**Network calls: decided per analyzer, against one test**
+
+An analyzer may make network calls only if no call ever carries the indicator or the file.
+
+- A feed analyzer that downloads Tor exit lists or a blocklist on a schedule passes. The download
+  says nothing about any case.
+- A GeoIP database update passes, for the same reason.
+- An analyzer that resolves, queries or posts the indicator anywhere fails, including to systems we
+  own. An internal DNS server that forwards to a public resolver carries the indicator out with it.
+
+Each analyzer's decision is recorded here, with the date and who made it, before it goes on an
+allowlist:
+
+| Analyzer | Network calls | Carries the indicator? | Decision | By | Date |
+|---|---|---|---|---|---|
+| *(filled from the probe output)* | | | | | |
+
 ## 10. Network
 
 - IntelOwl runs its own compose stack. A shared external Docker network is joined by CAIRN's `web`
@@ -233,6 +295,8 @@ In the style of `tests/test_threat_intel.py`, with IntelOwl mocked:
 - The `intelowl_jobs` row exists before the request is attempted, and survives a failed request.
 - A file whose hash does not match is not submitted, and the mismatch reaches chain of custody.
 - An analyst cannot submit a file; an admin can.
+- Disk Image, Memory Dump, Network Capture and Database Dump records show no button, and the route refuses them.
+- An Email/PST record holding a parseable `.eml` can be submitted; a `.pst`, an `.ost`, or a file named `.eml` that does not parse as a message cannot.
 - A report listing an analyzer outside the allowlist is stored as `violation`, never `reported`.
 - The collect task sends a job ID and nothing else.
 - A failed upstream delete is recorded and retried.

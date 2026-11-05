@@ -164,12 +164,21 @@ def discover_analyzers(c):
     in the JSON log either way.
     """
     out = []
-    status, payload = c.call("GET", "/api/analyzer", params={"page_size": 1000},
-                             label="list analyzers (v5+)")
+    status, payload = c.call("GET", "/api/analyzer",
+                             params={"page_size": 100, "page": 1},
+                             label="list analyzers (v5+), page 1")
     if status == 200:
-        page = payload
+        # IntelOwl's paginator reports "count" and "total_pages" and may not
+        # send a "next" link. The first version of this probe only followed
+        # "next", read page 1, and stopped: every list ended part way through
+        # the alphabet. Walk pages by number, and stop on whichever signal the
+        # server gives: total_pages reached, no "next", or an empty page.
+        page, number, expected = payload, 1, None
         while True:
-            for a in _results(page):
+            rows = _results(page)
+            if isinstance(page, dict) and isinstance(page.get("count"), int):
+                expected = page["count"]
+            for a in rows:
                 tlp = str(a.get("maximum_tlp") or "").upper()
                 out.append({
                     "name": a.get("name"),
@@ -182,14 +191,25 @@ def discover_analyzers(c):
                     "red_safe": tlp == "RED",
                     "basis": "maximum_tlp",
                 })
-            nxt = page.get("next") if isinstance(page, dict) else None
-            if not nxt:
+            total_pages = page.get("total_pages") if isinstance(page, dict) else None
+            has_next = bool(page.get("next")) if isinstance(page, dict) else False
+            if not rows or number >= 50:
                 break
-            path = urllib.parse.urlparse(nxt)
-            status, page = c.call("GET", path.path + ("?" + path.query if path.query else ""),
-                                  label="list analyzers (next page)")
+            if isinstance(total_pages, int):
+                if number >= total_pages:
+                    break
+            elif not has_next:
+                break
+            number += 1
+            status, page = c.call("GET", "/api/analyzer",
+                                  params={"page_size": 100, "page": number},
+                                  label=f"list analyzers (v5+), page {number}")
             if status != 200:
                 break
+        LOG["analyzer_count_reported"] = expected
+        if expected is not None and expected != len(out):
+            say(f"WARNING: IntelOwl reports {expected} analyzers but {len(out)} were "
+                f"read. The list below is incomplete; see the JSON log.")
         return out, "/api/analyzer"
 
     status, payload = c.call("GET", "/api/get_analyzer_configs",
