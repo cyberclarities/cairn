@@ -3,6 +3,12 @@
 {% block page_title %}Reports{% endblock %}
 
 {% block content %}
+<div class="d-flex justify-content-end mb-3">
+  <a href="{{ url_for('reports.leadership') }}" class="btn btn-sm btn-outline-primary">
+    <i class="bi bi-file-earmark-text"></i> Leadership one-pager
+  </a>
+</div>
+
 <div class="row g-3">
 
   <!-- MTTR -->

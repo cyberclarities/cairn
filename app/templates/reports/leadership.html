@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{% set k = data.kpis %}
+{% set period_label = "Last " ~ data.period_name %}
+<title>Incident Response Summary, {{ period_label }}</title>
+<style>
+  :root {
+    --navy: #1F3864;
+    --red: #C00000;
+    --ink: #1a1a1a;
+    --grey: #52514e;
+    --muted: #7a7974;
+    --lightgrey: #F2F2F2;
+    --border: #d0d7de;
+    --opened: #2a78d6;
+    --closed: #eb6834;
+  }
+  * { box-sizing: border-box; }
+  html { background: #fff; }
+  body {
+    font-family: Calibri, "Segoe UI", Arial, sans-serif;
+    font-size: 10pt; color: var(--ink); background: #fff;
+    max-width: 850px; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; line-height: 1.4;
+  }
+  .kicker { color: var(--red); font-weight: 700; font-size: 8.5pt; letter-spacing: 0.06em; }
+  h1 { color: var(--navy); font-size: 18pt; margin: 0.1rem 0 0.15rem; }
+  .meta { color: var(--grey); font-size: 8.5pt; margin-bottom: 0.6rem; }
+  .lead { font-size: 10.5pt; margin: 0 0 0.8rem; }
+  h2 {
+    color: var(--navy); font-size: 11pt; margin: 0.7rem 0 0.3rem;
+    border-bottom: 1px solid var(--border); padding-bottom: 0.15rem;
+  }
+
+  .kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.5rem; }
+  .kpi { border: 1px solid var(--border); border-radius: 6px; padding: 0.45rem 0.6rem; }
+  .kpi .value { font-size: 20pt; font-weight: 700; color: var(--navy); line-height: 1.1; }
+  .kpi .value small { font-size: 10pt; font-weight: 400; color: var(--grey); }
+  .kpi .label { font-size: 8.5pt; font-weight: 700; }
+  .kpi .sub { font-size: 7.5pt; color: var(--muted); }
+
+  .legend { display: flex; gap: 1rem; font-size: 8.5pt; color: var(--grey); margin: 0.1rem 0 0.2rem; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+            margin-right: 0.3rem; vertical-align: -1px; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 0.16rem 0.35rem; font-size: 8.5pt; text-align: left; vertical-align: top; }
+  th { color: var(--grey); font-weight: 700; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th.grp { text-align: center; border-bottom: 1px solid #eeeeec; padding-bottom: 0; }
+  td { border-bottom: 1px solid #eeeeec; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden;
+                     clip: rect(0 0 0 0); white-space: nowrap; }
+  .month-table th, .month-table td { text-align: right; padding: 0.15rem 0.2rem; font-size: 7.5pt; }
+  .month-table th:first-child, .month-table td:first-child { text-align: left; white-space: nowrap; }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+  .bar-row { display: grid; grid-template-columns: 7.5rem 1fr 2rem; align-items: center;
+             gap: 0.4rem; font-size: 8.5pt; margin: 0.12rem 0; }
+  .bar-track { height: 8px; background: var(--lightgrey); border-radius: 0 4px 4px 0; }
+  .bar-fill { height: 8px; background: var(--navy); border-radius: 0 4px 4px 0; }
+  .empty { color: var(--muted); font-style: italic; font-size: 8.5pt; }
+  .notes { margin-top: 0.9rem; color: var(--muted); font-size: 7.5pt; }
+  .notes p { margin: 0 0 0.2rem; }
+  a.case { color: inherit; text-decoration: none; }
+
+  /* Screen-only chrome */
+  #print-bar {
+    position: sticky; top: 0; background: #fff; border-bottom: 1px solid var(--border);
+    padding: 0.6rem 1.25rem; margin: -1.5rem -1.25rem 1rem; display: flex;
+    align-items: center; gap: 0.5rem; flex-wrap: wrap; z-index: 10;
+  }
+  #print-bar .back { color: var(--grey); font-size: 0.85rem; margin-right: auto; text-decoration: none; }
+  #print-bar .period a, #print-bar .period span {
+    font-size: 0.85rem; padding: 0.3rem 0.65rem; border: 1px solid var(--border);
+    border-radius: 6px; text-decoration: none; color: var(--navy);
+  }
+  #print-bar .period span { background: var(--navy); color: #fff; border-color: var(--navy); }
+  #print-bar button {
+    background: var(--navy); color: #fff; border: none; border-radius: 6px;
+    padding: 0.4rem 0.9rem; font-size: 0.85rem; cursor: pointer;
+  }
+
+  @media (max-width: 640px) {
+    .kpis { grid-template-columns: repeat(2, 1fr); }
+    .cols { grid-template-columns: 1fr; }
+  }
+
+  @page { size: letter; margin: 0.45in; }
+  @media print {
+    #print-bar { display: none; }
+    body { max-width: none; padding: 0; }
+    .cols, .kpi, table, svg { break-inside: avoid; }
+    a.case { color: inherit; }
+  }
+</style>
+</head>
+<body>
+
+<div id="print-bar">
+  <a class="back" href="{{ url_for('reports.index') }}">&larr; Reports</a>
+  <div class="period">
+    {% for key, name in data.periods %}
+      {% if key == data.period %}<span>{{ name }}</span>
+      {% else %}<a href="{{ url_for('reports.leadership', period=key) }}">{{ name }}</a>{% endif %}
+    {% endfor %}
+  </div>
+  <button type="button" onclick="window.print()">Print / Save as PDF</button>
+</div>
+
+<div class="kicker">LEADERSHIP SUMMARY</div>
+<h1>Incident Response, {{ period_label }}</h1>
+<div class="meta">
+  {%- macro longdate(d) %}{{ d.strftime("%B") }} {{ d.day }}, {{ d.year }}{% endmacro %}
+  {{ longdate(data.period_start) }} to {{ longdate(data.period_end) }}
+  · Generated {{ longdate(data.generated_at) }} {{ data.generated_at.strftime("%H:%M") }} UTC
+</div>
+
+<p class="lead">
+  We opened {{ k.opened }} case{{ "" if k.opened == 1 else "s" }} and closed {{ k.closed }}
+  in this period{% if k.critical_high_opened %}; {{ k.critical_high_opened }} of the new cases
+  {{ "was" if k.critical_high_opened == 1 else "were" }} Critical or High severity{% endif %}.
+  {% if k.typical_contain_days is not none %}A typical incident was contained in
+  {{ k.typical_contain_days }} day{{ "" if k.typical_contain_days == 1 else "s" }}{% if k.typical_close_days is not none %}
+  and closed in {{ k.typical_close_days }} day{{ "" if k.typical_close_days == 1 else "s" }}{% endif %}.
+  {% elif k.typical_close_days is not none %}A typical case closed in
+  {{ k.typical_close_days }} day{{ "" if k.typical_close_days == 1 else "s" }}.{% endif %}
+  {{ k.open_now }} case{{ " is" if k.open_now == 1 else "s are" }} open today{% set over90 = data.aging[-1].count %}{% if over90 %},
+  {{ over90 }} of {{ "it" if k.open_now == 1 else "them" }} for more than 90 days{% endif %}.
+</p>
+
+<div class="kpis">
+  <div class="kpi">
+    <div class="label">Cases opened</div>
+    <div class="value">{{ k.opened }}</div>
+    <div class="sub">{{ k.critical_high_opened }} Critical or High</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Cases closed</div>
+    <div class="value">{{ k.closed }}</div>
+    <div class="sub">in this period</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Open today</div>
+    <div class="value">{{ k.open_now }}</div>
+    <div class="sub">{{ data.aging[-1].count }} open over 90 days</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Typical time to contain</div>
+    <div class="value">{% if k.typical_contain_days is not none %}{{ k.typical_contain_days }} <small>days</small>{% else %}&mdash;{% endif %}</div>
+    <div class="sub">median of {{ k.contain_sample }} contained case{{ "" if k.contain_sample == 1 else "s" }}</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Typical time to close</div>
+    <div class="value">{% if k.typical_close_days is not none %}{{ k.typical_close_days }} <small>days</small>{% else %}&mdash;{% endif %}</div>
+    <div class="sub">median of {{ k.close_sample }} closed case{{ "" if k.close_sample == 1 else "s" }}</div>
+  </div>
+</div>
+
+<h2>Cases opened and closed per {{ data.unit }}</h2>
+{{ data.chart }}
+<table class="month-table visually-hidden" aria-label="Cases per {{ data.unit }}">
+  <thead><tr><th></th>{% for m in data.series %}<th>{{ m.label }}</th>{% endfor %}</tr></thead>
+  <tbody>
+    <tr><td>Opened</td>{% for m in data.series %}<td>{{ m.opened }}</td>{% endfor %}</tr>
+    <tr><td>Closed</td>{% for m in data.series %}<td>{{ m.closed }}</td>{% endfor %}</tr>
+    <tr><td>Typical days to close</td>{% for m in data.series %}<td>{{ m.typical_close_days if m.typical_close_days is not none else "–" }}</td>{% endfor %}</tr>
+  </tbody>
+</table>
+
+<div class="cols">
+  <div>
+    <h2>By severity</h2>
+    {% if data.by_severity %}
+    <table>
+      <thead><tr>
+        <th rowspan="2">Severity</th><th class="num" rowspan="2">Opened</th>
+        <th class="num" rowspan="2">Closed</th><th class="num" rowspan="2">Open</th>
+        <th class="num grp" colspan="2">Typical days to</th>
+      </tr><tr><th class="num">contain</th><th class="num">close</th></tr></thead>
+      <tbody>
+      {% for r in data.by_severity %}
+        <tr>
+          <td>{{ r.severity }}</td>
+          <td class="num">{{ r.opened }}</td>
+          <td class="num">{{ r.closed }}</td>
+          <td class="num">{{ r.open_now }}</td>
+          <td class="num">{{ r.typical_contain_days if r.typical_contain_days is not none else "–" }}</td>
+          <td class="num">{{ r.typical_close_days if r.typical_close_days is not none else "–" }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="empty">No cases in this period.</p>{% endif %}
+
+    <h2>What kind of incidents</h2>
+    {% if data.top_types %}
+      {% set top = data.top_types[0][1] %}
+      {% for name, n in data.top_types %}
+      <div class="bar-row">
+        <span>{{ name }}</span>
+        <span class="bar-track"><span class="bar-fill" style="display:block;width:{{ (n / top * 100)|round(1) }}%"></span></span>
+        <span class="num" style="text-align:right">{{ n }}</span>
+      </div>
+      {% endfor %}
+    {% else %}<p class="empty">No cases opened in this period.</p>{% endif %}
+  </div>
+
+  <div>
+    <h2>Open cases by age</h2>
+    {% set amax = (data.aging|map(attribute="count")|max) or 1 %}
+    {% for b in data.aging %}
+    <div class="bar-row">
+      <span>{{ b.label }}</span>
+      <span class="bar-track"><span class="bar-fill" style="display:block;width:{{ (b.count / amax * 100)|round(1) }}%"></span></span>
+      <span class="num" style="text-align:right">{{ b.count }}</span>
+    </div>
+    {% endfor %}
+
+    <h2>Longest open</h2>
+    {% if data.oldest_open %}
+    <table>
+      <thead><tr><th>Case</th><th>Severity</th><th>Status</th><th class="num">Days</th></tr></thead>
+      <tbody>
+      {% for c in data.oldest_open %}
+        <tr>
+          <td><a class="case" href="{{ url_for('cases.detail', case_id_int=c.id) }}"><strong>{{ c.case_id }}</strong>
+            {{ c.title[:30] }}{% if c.title|length > 30 %}…{% endif %}</a></td>
+          <td>{{ c.severity }}</td>
+          <td style="white-space:nowrap">{{ c.status }}</td>
+          <td class="num">{{ c.days_open }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="empty">No open cases.</p>{% endif %}
+
+    <h2>Escalation</h2>
+    <p style="font-size:9pt;margin:0">
+      {{ k.escalated }} case{{ "" if k.escalated == 1 else "s" }} opened in this period
+      {{ "was" if k.escalated == 1 else "were" }} escalated;
+      the board was notified of {{ k.board_flagged }}.
+    </p>
+  </div>
+</div>
+
+<div class="notes">
+  <p><strong>How these are counted.</strong> "Typical" is the median: half of cases took less time, half took more.
+  Time to contain runs from the case's opened date to its contained date; time to close, to its closed date.
+  A case counts as closed in a {{ data.unit }} when its status is Closed and its closed date falls in that {{ data.unit }}.{% if data.unit == 'week' %} Weeks are counted back from today, so the oldest bar can hold fewer than seven days.{% endif %}</p>
+  {% set g = data.data_gaps %}
+  {% if g.closed_without_date or g.dates_out_of_order %}
+  <p><strong>Left out of the time figures:</strong>
+    {% if g.closed_without_date %}{{ g.closed_without_date }} closed case{{ "" if g.closed_without_date == 1 else "s" }} with no closed date{% endif %}{% if g.closed_without_date and g.dates_out_of_order %}; {% endif %}{% if g.dates_out_of_order %}{{ g.dates_out_of_order }} case{{ "" if g.dates_out_of_order == 1 else "s" }} with a date earlier than the opened date{% endif %}.
+    Correcting those dates on the case brings them in.</p>
+  {% endif %}
+</div>
+
+</body>
+</html>

@@ -1,4 +1,4 @@
-from flask import Blueprint, render_template
+from flask import Blueprint, render_template, request
 from flask_login import login_required
 from sqlalchemy import func
 from app.models import db, Case, IOC, TimelineEvent, User, utcnow
@@ -106,3 +106,30 @@ def index():
         mttr_sample_size=mttr_sample_size,
         closed_total=closed_total,
     )
+
+
+@reports_bp.route("/leadership")
+@login_required
+def leadership():
+    """
+    One-page summary for leadership: volume, speed, and what is still open.
+
+    A standalone print page, like the After Action Report, so it prints or saves
+    to PDF as one sheet with no application chrome.
+
+    ?period= takes 30d, 3m, 6m or 12m. The older ?months=3|6|12 still works, so a
+    bookmarked link keeps its window. Anything else falls back to 12 months.
+    """
+    from markupsafe import Markup
+    from app.common import parse_int
+    from app.services import leadership_report
+
+    period = request.args.get("period", "")
+    if period not in leadership_report.PERIOD_KEYS:
+        months = parse_int(request.args.get("months"))
+        period = f"{months}m" if months else leadership_report.DEFAULT_PERIOD
+    data = leadership_report.build(utcnow(), period)
+    # The chart is SVG built server-side from integers and month names only, with
+    # no user-supplied text in it, so it is safe to mark up as-is.
+    data["chart"] = Markup(data["chart"])
+    return render_template("reports/leadership.html", data=data)
