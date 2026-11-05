@@ -113,6 +113,9 @@
     #sidebar .nav-link.active { color: var(--c-accent); }
     [data-theme="light"] #sidebar .nav-link.active { color: #ffffff; background: rgba(255,255,255,0.25); }
     #sidebar .nav-link i { width: 16px; text-align: center; font-size: 0.9rem; }
+    /* A page that belongs under the item above it: indented, a step smaller. */
+    #sidebar .nav-link.nav-sub { padding-left: 2.6rem; font-size: 0.8rem; }
+    #sidebar .nav-link.nav-sub i { font-size: 0.8rem; }
     #sidebar .sidebar-footer {
       margin-top: auto; padding: 1rem 1.25rem;
       border-top: 1px solid var(--c-sidebar-border); font-size: 0.8rem; color: var(--c-sidebar-muted);
@@ -242,8 +245,11 @@
       <i class="bi bi-collection"></i> All Alerts
       {% if new_alert_count %}<span class="badge bg-danger ms-auto">{{ new_alert_count }}</span>{% endif %}
     </a>
-    <a href="{{ url_for('reports.index') }}" class="nav-link {% if request.blueprint == 'reports' %}active{% endif %}">
+    <a href="{{ url_for('reports.index') }}" class="nav-link {% if request.endpoint == 'reports.index' %}active{% endif %}">
       <i class="bi bi-bar-chart-line"></i> Reports
+    </a>
+    <a href="{{ url_for('reports.leadership') }}" class="nav-link nav-sub {% if request.endpoint == 'reports.leadership' %}active{% endif %}">
+      <i class="bi bi-file-earmark-text"></i> Leadership Summary
     </a>
 
     <div class="nav-section mt-2">Integrations</div>

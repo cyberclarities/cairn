@@ -20,15 +20,24 @@ Definitions, stated once so the page and the code cannot drift apart:
 """
 
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timedelta
 from statistics import median
 
 from flask import current_app
 
 from ..models import Case
 
-PERIOD_CHOICES = (3, 6, 12)
-DEFAULT_PERIOD = 12
+# Reporting windows, in the order the page offers them: (key, button label).
+# 30 days is a rolling window bucketed by week; the others are calendar months
+# bucketed by month, the current month included.
+PERIODS = (
+    ("30d", "30 days"),
+    ("3m", "3 months"),
+    ("6m", "6 months"),
+    ("12m", "12 months"),
+)
+PERIOD_KEYS = tuple(k for k, _ in PERIODS)
+DEFAULT_PERIOD = "12m"
 
 # Open-case aging buckets, in days since opened: (label, low inclusive, high inclusive).
 AGING_BUCKETS = (
@@ -62,20 +71,74 @@ def _typical(values):
     return round(median(values), 1) if values else None
 
 
-def build(now: datetime, months: int = DEFAULT_PERIOD) -> dict:
-    """Compute every figure on the leadership one-pager for the window ending *now*."""
-    if months not in PERIOD_CHOICES:
-        months = DEFAULT_PERIOD
+def _day_start(dt: datetime) -> datetime:
+    return dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    first_month = _add_months(_month_start(now), -(months - 1))
-    month_starts = [_add_months(first_month, i) for i in range(months)]
-    window_end = _add_months(month_starts[-1], 1)
+
+def _span_label(start: datetime, last_day: datetime) -> str:
+    """'Oct 7–13', or 'Oct 29–Nov 4' across a month boundary, or 'Nov 5' for one day."""
+    if start.date() == last_day.date():
+        return f"{start:%b} {start.day}"
+    if start.month == last_day.month:
+        return f"{start:%b} {start.day}\u2013{last_day.day}"
+    return f"{start:%b} {start.day}\u2013{last_day:%b} {last_day.day}"
+
+
+def _buckets(now: datetime, period: str):
+    """
+    The window and its chart buckets: (window_start, window_end, unit, buckets),
+    each bucket a dict with start, end (exclusive), label and full_label.
+    """
+    if period == "30d":
+        # Thirty calendar days, today included, in weeks counted back from today
+        # so the most recent week is always whole. The oldest bucket holds the
+        # two days left over, and its label says so.
+        window_end = _day_start(now) + timedelta(days=1)
+        window_start = window_end - timedelta(days=30)
+        edges = [window_start]
+        edge = window_start + timedelta(days=30 % 7 or 7)
+        while edge < window_end:
+            edges.append(edge)
+            edge += timedelta(days=7)
+        edges.append(window_end)
+        buckets = []
+        for a, b in zip(edges, edges[1:]):
+            last = b - timedelta(days=1)
+            label = _span_label(a, last)
+            buckets.append({"start": a, "end": b, "label": label,
+                            "full_label": f"{a:%B} {a.day} to {last:%B} {last.day}"
+                            if a.date() != last.date() else f"{a:%B} {a.day}"})
+        return window_start, window_end, "week", buckets
+
+    months = int(period[:-1])
+    first = _add_months(_month_start(now), -(months - 1))
+    buckets = []
+    for i in range(months):
+        a, b = _add_months(first, i), _add_months(first, i + 1)
+        label = f"{a:%b}" if i and a.month != 1 else f"{a:%b} {a:%y}"
+        buckets.append({"start": a, "end": b, "label": label, "full_label": f"{a:%B %Y}"})
+    return first, buckets[-1]["end"], "month", buckets
+
+
+def build(now: datetime, period=DEFAULT_PERIOD) -> dict:
+    """
+    Compute every figure on the leadership one-pager for the window ending *now*.
+
+    *period* is a key from PERIODS. A bare integer is read as that many months,
+    which keeps ?months=6 links working; anything unrecognized falls back to 12.
+    """
+    if isinstance(period, int):
+        period = f"{period}m"
+    if period not in PERIOD_KEYS:
+        period = DEFAULT_PERIOD
+
+    window_start, window_end, unit, buckets = _buckets(now, period)
 
     def in_window(dt):
-        return dt is not None and first_month <= dt < window_end
+        return dt is not None and window_start <= dt < window_end
 
-    def month_index(dt):
-        return (dt.year - first_month.year) * 12 + dt.month - first_month.month
+    def in_bucket(dt, b):
+        return dt is not None and b["start"] <= dt < b["end"]
 
     cases = Case.query.all()
 
@@ -88,18 +151,17 @@ def build(now: datetime, months: int = DEFAULT_PERIOD) -> dict:
     contain_days = [d for d in (_days(c.opened_date, c.contained_date) for c in contained)
                     if d is not None]
 
-    # ── Per month ────────────────────────────────────────────────────────────
-    monthly = []
-    for i, start in enumerate(month_starts):
-        m_close = [d for c in closed if month_index(c.closed_date) == i
+    # ── Per bucket (month, or week in the 30-day view) ───────────────────────
+    series = []
+    for b in buckets:
+        b_close = [d for c in closed if in_bucket(c.closed_date, b)
                    for d in [_days(c.opened_date, c.closed_date)] if d is not None]
-        monthly.append({
-            "label": start.strftime("%b"),
-            "year": start.year,
-            "full_label": start.strftime("%B %Y"),
-            "opened": sum(1 for c in opened if month_index(c.opened_date) == i),
-            "closed": sum(1 for c in closed if month_index(c.closed_date) == i),
-            "typical_close_days": _typical(m_close),
+        series.append({
+            "label": b["label"],
+            "full_label": b["full_label"],
+            "opened": sum(1 for c in opened if in_bucket(c.opened_date, b)),
+            "closed": sum(1 for c in closed if in_bucket(c.closed_date, b)),
+            "typical_close_days": _typical(b_close),
         })
 
     # ── By severity ──────────────────────────────────────────────────────────
@@ -159,9 +221,11 @@ def build(now: datetime, months: int = DEFAULT_PERIOD) -> dict:
     )
 
     return {
-        "months": months,
-        "period_choices": PERIOD_CHOICES,
-        "period_start": first_month,
+        "period": period,
+        "period_name": dict(PERIODS)[period],
+        "periods": PERIODS,
+        "unit": unit,
+        "period_start": window_start,
         "period_end": now,
         "generated_at": now,
         "kpis": {
@@ -177,8 +241,8 @@ def build(now: datetime, months: int = DEFAULT_PERIOD) -> dict:
             "escalated": sum(1 for c in opened if c.escalated),
             "board_flagged": sum(1 for c in opened if c.board_flagged),
         },
-        "monthly": monthly,
-        "chart": monthly_chart_svg(monthly),
+        "series": series,
+        "chart": series_chart_svg(series, unit),
         "by_severity": by_severity,
         "aging": aging,
         "oldest_open": oldest_open,
@@ -226,10 +290,10 @@ def _bar(x, y_top, w, base_y, r=2):
             f"V{base_y:.1f} Z")
 
 
-def monthly_chart_svg(monthly, width=720, height=210) -> str:
+def series_chart_svg(series, unit="month", width=720, height=210) -> str:
     """
     Grouped bars, opened beside closed, with the values set as rows of text
-    under each month. The rows sit in the same SVG as the bars so every number
+    under each month (or week). The rows sit in the same SVG as the bars so every number
     lines up under its own month; a separate HTML table could not guarantee it.
     """
     row_h = 13
@@ -237,21 +301,21 @@ def monthly_chart_svg(monthly, width=720, height=210) -> str:
     plot_w = width - left - right
     plot_h = height - top - bottom
     base_y = top + plot_h
-    peak = max([m["opened"] for m in monthly] + [m["closed"] for m in monthly] + [0])
+    peak = max([m["opened"] for m in series] + [m["closed"] for m in series] + [0])
     y_max = _nice_max(peak)
     ticks = 4
 
     def y(v):
         return base_y - (v / y_max) * plot_h
 
-    n = len(monthly)
+    n = len(series)
     group_w = plot_w / n
     bar_w = min(18.0, (group_w - 10) / 2)
     gap = 2
 
     parts = [
         f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" '
-        f'aria-label="Cases opened and closed per month" '
+        f'aria-label="Cases opened and closed per {unit}" '
         f'xmlns="http://www.w3.org/2000/svg" font-family="inherit">'
     ]
     for t in range(ticks + 1):
@@ -264,7 +328,7 @@ def monthly_chart_svg(monthly, width=720, height=210) -> str:
         parts.append(f'<text x="{left - 6}" y="{yy + 3:.1f}" text-anchor="end" '
                      f'font-size="9" fill="#52514e">{label}</text>')
 
-    for i, m in enumerate(monthly):
+    for i, m in enumerate(series):
         cx = left + group_w * i + group_w / 2
         x_open = cx - gap / 2 - bar_w
         x_close = cx + gap / 2
@@ -278,7 +342,7 @@ def monthly_chart_svg(monthly, width=720, height=210) -> str:
             # answers a hover.
             parts.append(f'<rect x="{x0:.1f}" y="{top}" width="{bar_w:.1f}" height="{plot_h}" '
                          f'fill="transparent"><title>{tip}</title></rect>')
-        label = m["label"] if i and m["label"] != "Jan" else f'{m["label"]} {str(m["year"])[2:]}'
+        label = m["label"]
         parts.append(f'<text x="{cx:.1f}" y="{base_y + 13:.1f}" text-anchor="middle" '
                      f'font-size="9" fill="#52514e">{label}</text>')
         days = m["typical_close_days"]
