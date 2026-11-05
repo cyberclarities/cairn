@@ -148,11 +148,43 @@ def verify_file(relative_path: str, expected_sha256: str):
     return computed == expected_sha256, computed
 
 
-def delete_file(relative_path: str) -> None:
-    """Best-effort removal. A file that's already gone is not an error."""
+def delete_file(relative_path: str) -> bool:
+    """
+    Best-effort removal. A file that's already gone is not an error.
+
+    Returns False only when a file exists and could not be removed, so a caller
+    deleting many can report how many were left behind.
+    """
     path = abs_path(relative_path)
     if path:
         try:
             os.unlink(path)
         except OSError as exc:
             log.warning("Could not remove evidence file %s: %s", path, exc)
+            return False
+    return True
+
+
+def remove_empty_dirs(case_id: int) -> None:
+    """
+    Remove a case's storage directories once they hold nothing.
+
+    save_evidence_file lays files out as <root>/<case_id>/<evidence_id>/. Only
+    empty directories are removed (rmdir refuses anything else), so a file that
+    could not be deleted keeps its directory and stays findable.
+    """
+    root = os.path.realpath(_storage_root())
+    case_dir = os.path.realpath(os.path.join(root, str(int(case_id))))
+    if not case_dir.startswith(root + os.sep) or not os.path.isdir(case_dir):
+        return
+    for name in os.listdir(case_dir):
+        sub = os.path.join(case_dir, name)
+        if os.path.isdir(sub):
+            try:
+                os.rmdir(sub)
+            except OSError:
+                pass
+    try:
+        os.rmdir(case_dir)
+    except OSError:
+        pass

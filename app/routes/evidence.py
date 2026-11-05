@@ -135,7 +135,12 @@ def edit_evidence(case_id_int, ev_id):
     ev.storage_location = f.get("storage_location", "").strip()
     ev.status = choice(f.get("status"), current_app.config["EVIDENCE_STATUSES"],
                        default=ev.status)
-    ev.chain_of_custody = f.get("chain_of_custody", "").strip()
+    # chain_of_custody is deliberately not read here. It is append-only: the
+    # initial entry is written when the record is created, and every entry after
+    # that goes through add_custody_entry, or is written by the app itself (upload,
+    # download, scheduled hash verification). This route used to assign the whole
+    # field from the form, unaudited, which let any analyst replace the custody
+    # history, HASH MISMATCH notes included, with anything at all.
     ev.notes = f.get("notes", "").strip()
     ev.collection_date = parse_date(f.get("collection_date"))
 
@@ -163,6 +168,11 @@ def add_custody_entry(case_id_int, ev_id):
         timestamp = utcnow().strftime("%Y-%m-%d %H:%M UTC")
         entry = f"[{timestamp}] {current_user.name}: {note}"
         ev.chain_of_custody = (ev.chain_of_custody or "") + ("\n" if ev.chain_of_custody else "") + entry
+        # The custody text lives on the evidence row, so the audit log is the
+        # independent record of who appended what. A custody entry that exists
+        # only in the field it describes cannot be checked against anything.
+        log_event("evidence", ev.id, "custody_entry_added",
+                  detail=entry, case_id=case.id)
         db.session.commit()
         flash("Chain-of-custody entry added.", "success")
 

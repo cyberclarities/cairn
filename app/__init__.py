@@ -134,6 +134,7 @@ def create_app():
     with app.app_context():
         from .seed import seed_database
         seed_database(app)
+        _warn_if_superuser(app)
 
     # OIDC (optional)
     if app.config.get("OIDC_CLIENT_ID"):
@@ -176,6 +177,36 @@ def _auto_upgrade(app):
             "Run 'flask db init && flask db migrate' to start tracking schema changes."
         )
         db.create_all()
+
+
+def _warn_if_superuser(app):
+    """
+    Say so, loudly, when the app's database connection is a superuser.
+
+    The database restore feature executes an uploaded dump with this
+    connection's privileges. As a superuser that includes COPY ... FROM PROGRAM,
+    which runs commands on the database host. docker-compose.yml now connects as
+    a dedicated non-superuser role (CAIRN_DB_USER); this catches a deployment
+    that has not moved over, or an external database pointed at with an admin
+    account. A warning rather than a refusal to start, so an upgrade that
+    skipped the role step still comes up and can be fixed.
+    """
+    try:
+        is_super = db.session.execute(
+            db.text("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
+        ).scalar()
+    except Exception:
+        app.logger.debug("Could not check database role privileges", exc_info=True)
+        db.session.rollback()
+        return
+    if is_super:
+        app.logger.warning(
+            "CAIRN is connected to PostgreSQL as a SUPERUSER. Database restore "
+            "will execute uploaded SQL with superuser rights, which includes "
+            "running commands on the database host. Connect as a role without "
+            "superuser (see CAIRN_DB_USER in .env.example and "
+            "deploy/postgres-init/10-cairn-app-role.sh)."
+        )
 
 
 def _register_security_headers(app):

@@ -41,6 +41,7 @@ from flask import (
 from flask_login import login_required, current_user
 
 from ..common import log_event, parse_int
+from ..services import evidence_storage
 from ..seed import DEFAULT_LOOKUP_VALUES
 from ..decorators import admin_required
 from ..models import db, LookupValue, AuditLog, Case, Alert, User, utcnow, TIMELINE_COLORS
@@ -120,7 +121,11 @@ def _dump_to_path(params: dict, dest_path: str, timeout: int = 300) -> tuple[boo
         params["dbname"],
     ]
     try:
-        with open(dest_path, "wb") as out:
+        # 0600 from the moment the file exists. A snapshot is the whole database,
+        # password hashes and every case included, so it is not left to whatever
+        # umask the container happens to run with.
+        fd = os.open(dest_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as out:
             result = subprocess.run(
                 cmd, env=_pg_env(params["password"]),
                 stdout=out, stderr=subprocess.PIPE, timeout=timeout,
@@ -137,7 +142,73 @@ def _dump_to_path(params: dict, dest_path: str, timeout: int = 300) -> tuple[boo
         return False, f"Could not write snapshot to {dest_path}: {exc}"
     if result.returncode != 0:
         return False, result.stderr.decode("utf-8", errors="replace")[:800]
+    _prune_snapshots(os.path.dirname(dest_path), keep=dest_path)
     return True, ""
+
+
+# Safety snapshots are named <kind>_<YYYYmmdd_HHMMSS>.sql. Only files matching
+# this are ever pruned, so nothing else an operator puts in the directory is touched.
+_SNAPSHOT_NAME = re.compile(r"^pre-[a-z-]+_\d{8}_\d{6}\.sql$")
+# The newest few are kept whatever their age, so a long quiet spell followed by
+# one bad restore never leaves the directory empty.
+_SNAPSHOT_KEEP_NEWEST = 3
+
+
+def _snapshot_retention_days() -> int:
+    """CAIRN_SNAPSHOT_RETENTION_DAYS, defaulting to 30. Zero or less keeps forever."""
+    try:
+        return int(os.environ.get("CAIRN_SNAPSHOT_RETENTION_DAYS", 30))
+    except ValueError:
+        return 30
+
+
+def _prune_snapshots(directory: str, keep: str | None = None) -> list[str]:
+    """
+    Delete safety snapshots older than CAIRN_SNAPSHOT_RETENTION_DAYS.
+
+    Every case delete, alert purge and restore writes a full, uncompressed dump
+    here, and nothing used to remove them. Two costs followed. The volume grew
+    without limit. And a case an admin had "permanently" deleted stayed readable
+    in every snapshot taken after it, indefinitely, which is not what the word
+    permanently tells anyone. Retention puts a known, stated end date on both.
+
+    Set CAIRN_SNAPSHOT_RETENTION_DAYS=0 to keep snapshots forever. Each deletion
+    is written to the audit log; the caller's commit carries it.
+    """
+    days = _snapshot_retention_days()
+    if days <= 0:
+        return []
+
+    try:
+        entries = [
+            os.path.join(directory, n) for n in os.listdir(directory)
+            if _SNAPSHOT_NAME.match(n)
+        ]
+        entries.sort(key=os.path.getmtime, reverse=True)
+    except OSError:
+        log.warning("Could not list snapshot directory %s for pruning", directory,
+                    exc_info=True)
+        return []
+
+    cutoff = datetime.now(timezone.utc).timestamp() - days * 86400
+    removed = []
+    for path in entries[_SNAPSHOT_KEEP_NEWEST:]:
+        if keep and os.path.abspath(path) == os.path.abspath(keep):
+            continue
+        try:
+            if os.path.getmtime(path) >= cutoff:
+                continue
+            os.unlink(path)
+            removed.append(os.path.basename(path))
+        except OSError:
+            log.warning("Could not prune snapshot %s", path, exc_info=True)
+
+    if removed:
+        log.info("Pruned %d safety snapshot(s) older than %d days: %s",
+                 len(removed), days, ", ".join(removed))
+        log_event("database", None, "snapshots_pruned",
+                  detail=f"older_than_days={days} files={', '.join(removed)}")
+    return removed
 
 
 def _current_alembic_head() -> str | None:
@@ -873,6 +944,13 @@ def _perform_restore(raw: bytes, filename: str, db_url: str,
     cmd = [
         "psql",
         "--set", "ON_ERROR_STOP=1",   # abort on first SQL error
+        # One transaction for the preamble and the whole dump. Without it, a
+        # failure partway through left whatever had already run: the schema
+        # dropped, half the tables reloaded, and the snapshot as the only way
+        # back. Now a failed restore rolls back to the database as it was,
+        # DROP SCHEMA included. The pg_terminate_backend in the preamble is the
+        # one effect a rollback cannot undo; it only ends other sessions.
+        "--single-transaction",
         "-w",                          # never prompt for password (fail fast instead)
         "-h", params["host"],
         "-p", params["port"],
@@ -976,8 +1054,15 @@ def _perform_restore(raw: bytes, filename: str, db_url: str,
         os.unlink(tmp.name)
 
     if returncode != 0:
-        err = stderr_bytes.decode("utf-8", errors="replace")
-        log.error("restore_db: psql exited %d — %s", returncode, err[:2000])
+        err_full = stderr_bytes.decode("utf-8", errors="replace")
+        # psql's stderr leads with NOTICE lines (the preamble's DROP SCHEMA
+        # CASCADE alone produces one per table), so the first 600 characters
+        # were usually notices and the actual error was cut off. Lead with the
+        # ERROR and its DETAIL; the full text still goes to the log below.
+        key_lines = [l for l in err_full.splitlines()
+                     if "ERROR:" in l or l.startswith(("DETAIL:", "HINT:"))]
+        err = "\n".join(key_lines) if key_lines else err_full
+        log.error("restore_db: psql exited %d — %s", returncode, err_full[-4000:])
         # Re-initialise connections so the app stays usable even after a failed restore
         try:
             db.session.invalidate()
@@ -994,9 +1079,10 @@ def _perform_restore(raw: bytes, filename: str, db_url: str,
         log.error("restore_db: pre-restore snapshot for recovery is at %s", snapshot_path)
         flash(
             f"Restore failed: {err[:600]}\n\n"
-            f"The database may be in a partial state. A snapshot was taken "
-            f"immediately before this restore and can be replayed with psql to "
-            f"return to the previous state — its path is in the server log "
+            f"The restore ran as a single transaction and was rolled back, so the "
+            f"database should be as it was before you started. If anything looks "
+            f"wrong, a snapshot was taken immediately before this restore and can "
+            f"be replayed with psql; its path is in the server log "
             f"(docker compose logs web).",
             "danger",
         )
@@ -1117,7 +1203,11 @@ def _perform_restore(raw: bytes, filename: str, db_url: str,
 def delete_case(case_id_int):
     """
     Permanently delete a case, its IOCs, evidence, timeline events, status
-    history, and its own audit trail — everything the Case model cascades on.
+    history, and its own audit trail — everything the Case model cascades on —
+    and the stored evidence files on disk, which the cascade cannot reach.
+
+    The pre-delete safety snapshot still holds the case until snapshot
+    retention removes it (CAIRN_SNAPSHOT_RETENTION_DAYS); the flash says so.
 
     Alerts that were promoted or linked to this case are NOT deleted; they are
     unlinked (case_id cleared) and reset to Dismissed with a note. An alert
@@ -1205,13 +1295,43 @@ def delete_case(case_id_int):
         case_id=None,
     )
 
+    # The cascade removes the evidence rows; it cannot remove the files they
+    # point to, and it used to leave every one of them on disk with nothing
+    # referencing them. Collected first, removed only once the delete has
+    # committed, so a failed commit never leaves records pointing at files that
+    # are already gone.
+    evidence_files = [ev.file_path for ev in case.evidence_items if ev.file_path]
+
     db.session.delete(case)
     db.session.commit()
+
+    files_left = sum(1 for rel in evidence_files if not evidence_storage.delete_file(rel))
+    evidence_storage.remove_empty_dirs(case_pk)
+    if files_left:
+        log.error(
+            "delete_case: %d evidence file(s) for %s could not be removed from "
+            "storage; see the warnings above for paths", files_left, case_str,
+        )
+
+    retention = _snapshot_retention_days()
+    if not snapshot_path:
+        snapshot_note = ""
+    elif retention > 0:
+        snapshot_note = (f" The pre-delete snapshot still holds this case and is "
+                         f"kept for {retention} days.")
+    else:
+        snapshot_note = (" The pre-delete snapshot still holds this case and is "
+                         "kept until removed by hand.")
 
     flash(
         f"Case {case_str} deleted, along with {ioc_count} IOC(s), "
         f"{evidence_count} evidence item(s), and {timeline_count} timeline event(s)."
-        + (f" {len(linked_alerts)} linked alert(s) were unlinked and dismissed." if linked_alerts else ""),
+        + (f" {len(linked_alerts)} linked alert(s) were unlinked and dismissed." if linked_alerts else "")
+        + (f" {len(evidence_files) - files_left} stored evidence file(s) were removed from disk."
+           if evidence_files else "")
+        + (f" {files_left} evidence file(s) could not be removed; the server log has the paths."
+           if files_left else "")
+        + snapshot_note,
         "warning",
     )
     return redirect(url_for("settings.index") + "#database")

@@ -67,12 +67,26 @@ def _upsert_alerts(alerts: list[dict], source: str) -> tuple[int, object]:
     """
     Persist a list of normalised alert dicts.  Skips duplicates.
 
-    Returns (new_count, newest_event_timestamp). The caller commits.
+    Returns (new_count, newest_seen). The caller commits.
+
+    newest_seen is the newest created timestamp on *any* alert in the batch,
+    duplicates included. It used to be the newest among new alerts only, which
+    meant a page made up entirely of alerts already on file never moved the
+    high-water mark: the next poll asked for the same page, got the same
+    duplicates, and the mark stayed put for good while the status read "ok".
+    A duplicate is still proof that the source has been read up to its
+    timestamp, so it counts toward the mark.
     """
     from .models import Alert, db
 
     if not alerts:
         return 0, None
+
+    newest = None
+    for a in alerts:
+        created = a.get("cs_created_at")
+        if created and (newest is None or created > newest):
+            newest = created
 
     # Collect the batch's external IDs and resolve existing ones in one query
     # rather than one SELECT per alert.
@@ -90,7 +104,7 @@ def _upsert_alerts(alerts: list[dict], source: str) -> tuple[int, object]:
         incoming.setdefault(ext_id, a)
 
     if not incoming:
-        return 0, None
+        return 0, newest
 
     existing = {
         row[0] for row in
@@ -100,14 +114,11 @@ def _upsert_alerts(alerts: list[dict], source: str) -> tuple[int, object]:
     }
 
     new_count = 0
-    newest = None
     for ext_id, a in incoming.items():
         if ext_id in existing:
             continue
 
         created = a.get("cs_created_at")
-        if created and (newest is None or created > newest):
-            newest = created
 
         db.session.add(Alert(
             source=source,
@@ -132,15 +143,24 @@ def _upsert_alerts(alerts: list[dict], source: str) -> tuple[int, object]:
     return new_count, newest
 
 
-def _record_success(state, newest_event, ingested: int):
+def _record_success(state, newest_event, ingested: int, warning: str | None = None):
+    """
+    Mark a poll as complete and advance the high-water mark.
+
+    *warning* records a poll that finished but could not guarantee it read
+    everything (see _poll_crowdstrike). It is stored as status "degraded" with
+    the reason in last_error, so it shows up wherever poll health is checked
+    instead of hiding behind "ok".
+    """
     from .models import utcnow
 
     state.last_run_at = utcnow()
-    state.last_status = "ok"
-    state.last_error = None
+    state.last_status = "degraded" if warning else "ok"
+    state.last_error = warning[:2000] if warning else None
     state.consecutive_failures = 0
-    # Only advance the mark on a real event timestamp. Advancing it to "now"
-    # after an empty poll would skip anything that arrives late.
+    # Only advance the mark on a timestamp the source actually vouched for: an
+    # event it returned (CrowdStrike) or the moment a query was issued
+    # (Proofpoint). Never on "now" after the fact.
     if newest_event and (state.last_event_at is None or newest_event > state.last_event_at):
         state.last_event_at = newest_event
 
@@ -181,13 +201,61 @@ def _poll_crowdstrike(app):
             default_window_seconds=app.config.get("CS_POLL_WINDOW", 900),
             overlap_seconds=app.config.get("POLL_OVERLAP_SECONDS", 120),
         )
+        limit = app.config.get("CS_POLL_LIMIT", 200)
+        max_pages = max(1, app.config.get("CS_POLL_MAX_PAGES", 10))
+        mark = state.last_event_at
         try:
-            alerts = client.get_new_alerts(
-                limit=app.config.get("CS_POLL_LIMIT", 200),
-                since=since,
-            )
-            new_count, newest = _upsert_alerts(alerts, "crowdstrike")
-            _record_success(state, newest, new_count)
+            # The query is oldest-first and capped at CS_POLL_LIMIT, and it starts
+            # POLL_OVERLAP_SECONDS behind the mark. A burst larger than the cap
+            # inside that overlap used to fill every page with alerts already on
+            # file, so the poll never saw past them and the mark never moved: a
+            # permanent, silent stop with the status still reading "ok".
+            #
+            # A full page now means "there may be more". The poll keeps reading
+            # forward from the newest timestamp it has seen, without the overlap,
+            # until a page comes back short or CS_POLL_MAX_PAGES is reached. The
+            # overlap applies to the first page only; it exists to catch alerts
+            # that arrive late, and the first page has already covered it.
+            new_count = 0
+            newest_seen = None
+            warning = None
+            for _page in range(max_pages):
+                alerts = client.get_new_alerts(limit=limit, since=since)
+                added, newest = _upsert_alerts(alerts, "crowdstrike")
+                new_count += added
+                if newest and (newest_seen is None or newest > newest_seen):
+                    newest_seen = newest
+
+                if len(alerts) < limit:
+                    break  # caught up
+
+                candidates = [d for d in (newest_seen, mark) if d]
+                next_since = max(candidates) if candidates else None
+                if next_since is None or next_since <= since:
+                    # A full page in which every alert shares one created second
+                    # (the API filters at one-second resolution) or carries no
+                    # timestamp. Asking again returns the same page. Step one
+                    # second past it, and say plainly what that may have cost.
+                    stuck_at = next_since or since
+                    newest_seen = stuck_at + timedelta(seconds=1)
+                    warning = (
+                        f"More than CS_POLL_LIMIT ({limit}) alerts share the created "
+                        f"time {stuck_at:%Y-%m-%d %H:%M:%S} UTC. The poll stepped one "
+                        f"second past it; alerts in that second beyond the limit may "
+                        f"not have been ingested. Check Falcon directly for that "
+                        f"second and raise CS_POLL_LIMIT."
+                    )
+                    log.error("CrowdStrike: %s", warning)
+                    break
+                since = next_since
+            else:
+                log.warning(
+                    "CrowdStrike: read %d full page(s) and the source still has "
+                    "more. The rest will be read on the next poll; raise "
+                    "CS_POLL_LIMIT or CS_POLL_MAX_PAGES if this recurs.", max_pages,
+                )
+
+            _record_success(state, newest_seen, new_count, warning=warning)
             db.session.commit()
             if new_count:
                 log.info("CrowdStrike: ingested %d new alert(s)", new_count)
@@ -242,10 +310,17 @@ def _poll_proofpoint(app):
                 "recovered through this endpoint.", elapsed,
             )
 
+        # TAP's lookback is measured back from the moment the request is made,
+        # so a successful query covers everything up to the time it was issued.
+        # That moment, not the newest event returned, is what the mark records.
+        # Keyed to events, a quiet tenant never moved the mark at all: after an
+        # hour every poll logged an unrecoverable gap that did not exist, and
+        # a real one would have been lost among them.
+        queried_at = utcnow()
         try:
             alerts = client.get_new_alerts(since_seconds=since_seconds)
-            new_count, newest = _upsert_alerts(alerts, "proofpoint")
-            _record_success(state, newest, new_count)
+            new_count, _newest = _upsert_alerts(alerts, "proofpoint")
+            _record_success(state, queried_at, new_count)
             db.session.commit()
             if new_count:
                 log.info("Proofpoint: ingested %d new event(s)", new_count)

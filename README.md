@@ -47,10 +47,11 @@ cd cairn
 cp .env.example .env
 ```
 
-Edit `.env` — at minimum, set `POSTGRES_PASSWORD` and `SECRET_KEY`:
+Edit `.env` — at minimum, set `POSTGRES_PASSWORD`, `CAIRN_DB_PASSWORD` and `SECRET_KEY`:
 
 ```bash
 openssl rand -hex 24   # POSTGRES_PASSWORD
+openssl rand -hex 24   # CAIRN_DB_PASSWORD
 openssl rand -hex 32   # SECRET_KEY
 ```
 
@@ -72,7 +73,7 @@ The sections:
 
 | Section | Required? | Notes |
 |---|---|---|
-| PostgreSQL | Yes | `POSTGRES_PASSWORD` has no default — the app will not boot without it. |
+| PostgreSQL | Yes | `POSTGRES_PASSWORD` and `CAIRN_DB_PASSWORD` have no default. The app connects as `CAIRN_DB_USER`, a role without superuser rights; `POSTGRES_USER` is used only to create it. |
 | Hostname & port | Yes | `SERVER_NAME` must match what users type in the browser; Caddy issues TLS for it. |
 | Security | Yes | `SECRET_KEY`, session cookie flags, login lockout thresholds. |
 | Bootstrap admin | Yes | Used once, on first start, to create the initial admin account. |
@@ -129,6 +130,30 @@ From **Admin → Settings → Database**:
   checked for a valid `pg_dump` header and the tables CAIRN expects, and a snapshot of the current
   database is written to `CAIRN_BACKUP_DIR` (default `/app/data/pre-restore`) — if that snapshot
   fails, the restore is cancelled and the database is left untouched.
+- The restore runs as a single transaction. If any statement in the dump fails, the whole restore
+  rolls back and the database is left as it was.
+- An uploaded dump is executed with the app's database privileges, so its provenance is the
+  admin's call; the checks above confirm compatibility, not safety. That is why the app connects
+  as a non-superuser role: as superuser, a crafted dump could run commands on the database host.
+- A snapshot is also taken before every case delete and alert purge. Each one is a full copy of
+  the database, so a deleted case stays readable in the snapshots until they expire.
+  `CAIRN_SNAPSHOT_RETENTION_DAYS` (default 30) sets when; the newest three are always kept, and
+  `0` keeps them forever.
+
+### Upgrading a deployment that connected as the superuser
+
+Existing volumes were created before the app role existed. Set `CAIRN_DB_USER` and
+`CAIRN_DB_PASSWORD` in `.env`, then run once:
+
+```bash
+docker compose up -d postgres
+docker compose exec postgres sh /docker-entrypoint-initdb.d/10-cairn-app-role.sh
+docker compose up -d --build
+```
+
+The script is idempotent. It creates the role, and hands it the database, the `public` schema
+and every existing table. The app logs a warning at startup if it is still connected as a
+superuser.
 
 ## Development
 

@@ -152,6 +152,11 @@ class Config:
     CS_BASE_URL = os.environ.get("CS_BASE_URL", "https://api.crowdstrike.com")
     # How many alerts to pull per poll cycle (max 500)
     CS_POLL_LIMIT = int(os.environ.get("CS_POLL_LIMIT", 200))
+    # A full page means the source may hold more. A poll keeps reading forward
+    # page by page, up to this many pages, before leaving the rest for the next
+    # poll. Pages beyond the first never re-read the overlap window, which is
+    # what stops a burst of duplicates from stalling ingestion.
+    CS_POLL_MAX_PAGES = int(os.environ.get("CS_POLL_MAX_PAGES", 10))
     # Seconds of history to pull on the very first poll, before a high-water
     # mark exists (900 = 15 min, matches scheduler interval). After the first
     # successful poll the scheduler queries forward from the stored mark

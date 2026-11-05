@@ -4,3 +4,7 @@
 # render.
 app/static/vendor/fonts/*.woff   binary
 app/static/vendor/fonts/*.woff2  binary
+
+# Shell scripts run inside Linux containers (deploy/postgres-init/). A CRLF
+# line ending there fails at container start with a confusing "not found".
+*.sh  text eol=lf

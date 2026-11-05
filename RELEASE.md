@@ -99,12 +99,22 @@ on a default or missing value rather than coming up quietly with a password the 
 
 ```
 docker compose build
-docker compose exec web alembic upgrade head
+docker compose run --rm web flask db upgrade
 docker compose up -d
 ```
 
-Two things that bite people:
+Migrations run automatically on container start unless `AUTO_UPGRADE_DB=false`, so the middle step
+is optional — but running it first puts the migration output in front of you instead of in the
+container log, which is where you want it on a release that moves the schema head.
 
+Three things that bite people:
+
+- **It is `flask db upgrade`, not `alembic upgrade head`.** Schema changes are managed by
+  Flask-Migrate. `migrations/env.py` resolves the database URL through `current_app`, and
+  `migrations/alembic.ini` carries no `script_location` or `sqlalchemy.url` because Flask-Migrate
+  supplies both. Bare `alembic` fails with *No config file 'alembic.ini' found* — the file is at
+  `migrations/alembic.ini`, and pointing `-c` at it does not help, because the environment still
+  needs a Flask application context.
 - **`build` is not optional on updates.** The Dockerfile copies the application into the image, so
   `git pull` alone changes nothing in a running container.
 - **Diff your key sets before starting.** `.env.example` documents 51 keys. A `.env` carried

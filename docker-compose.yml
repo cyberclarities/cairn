@@ -12,6 +12,19 @@
 ## this once, before bringing the new image up:
 ##
 ##   docker compose run --rm --user root web chown -R cairn:cairn /app/data
+##
+## UPGRADING AN EXISTING DEPLOYMENT, database role: the web container no longer
+## connects as the Postgres superuser (POSTGRES_USER). It connects as
+## CAIRN_DB_USER, a role with no superuser rights that owns the CAIRN database.
+## A fresh volume creates that role automatically. An existing one needs it
+## created once, after setting CAIRN_DB_PASSWORD in .env:
+##
+##   docker compose up -d postgres
+##   docker compose exec postgres sh /docker-entrypoint-initdb.d/10-cairn-app-role.sh
+##   docker compose up -d --build
+##
+## Until that runs, the web container fails to start with an authentication
+## error for the new role. That is intended: loud beats quietly staying superuser.
 
 services:
 
@@ -23,8 +36,13 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-cairn}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:-cairn}
+      # Read by deploy/postgres-init/10-cairn-app-role.sh to create the
+      # non-superuser role the web tier connects as.
+      CAIRN_DB_USER: ${CAIRN_DB_USER:-cairn_app}
+      CAIRN_DB_PASSWORD: ${CAIRN_DB_PASSWORD:?CAIRN_DB_PASSWORD is required}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
     security_opt:
       - no-new-privileges:true
     # A restore replays an arbitrary-sized dump. Bound it so a bad one takes the
@@ -70,7 +88,10 @@ services:
       - .env
     environment:
       - PORT=${PORT:-5002}
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-cairn}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB:-cairn}
+      # The app role, not POSTGRES_USER. A database restore executes an uploaded
+      # dump with this connection's privileges; as superuser that included
+      # COPY ... FROM PROGRAM, which is command execution on the database host.
+      - DATABASE_URL=postgresql://${CAIRN_DB_USER:-cairn_app}:${CAIRN_DB_PASSWORD}@postgres/${POSTGRES_DB:-cairn}
     # This is the tier that parses uploads, shells out to psql, and holds the
     # CrowdStrike and Proofpoint credentials. It runs as a non-root uid (see
     # Dockerfile) on an unprivileged port and needs no capabilities at all.
