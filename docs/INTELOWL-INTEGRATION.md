@@ -200,21 +200,32 @@ is dropped, not substituted.
 
 **File allowlist** (`INTELOWL_ANALYZERS_FILE`)
 
-| Category | Candidates |
+| Category | Analyzers (matched to the deployed instance, 2026-11-05) |
 |---|---|
+| Baseline | File_Info |
 | Signatures and AV | Yara, ClamAV |
-| Executable static | PE_Info, Capa, Floss, Signature_Info |
+| Executable static | PE_Info, PEframe_Scan, Signature_Info, Capa_Info, Floss, DetectItEasy, ELF_Info, MachoInfo, GoReSym, Blint |
 | Office and PDF | Doc_Info, PDF_Info, Rtf_Info, Xlm_Macro_Deobfuscator |
-| Email | an `.eml` parser, if the instance has one marked RED-safe |
+| Phishing attachment formats | Lnk_Info, OneNote_Info, BoxJS |
+| Indicator extraction | IocExtract, IocFinder |
 
-Strings extraction is left off. It is noisy on large files and adds little the categories above do
-not already surface.
+The instance has no `.eml` parser marked RED-safe. An `.eml` still gets ClamAV, which decodes MIME
+and scans attachments natively, and Yara against the raw message. IocExtract and IocFinder are on the
+list to cover the rest: they pull URLs, domains and addresses out of the message, which the analyst
+can then add as indicators and check against the observable allowlist.
+
+BoxJS is the one dynamic analyzer on the file list. It runs JavaScript in a local emulator rather
+than parsing it. The emulators that run executables (Qiling, SpeakEasy) stay off until the static
+set has been through beta.
+
+Strings extraction (Strings_Info) is left off. It is noisy on large files, and IocExtract and
+IocFinder pull out the strings that matter.
 
 **Observable allowlist** (`INTELOWL_ANALYZERS_OBSERVABLE`)
 
-| Category | Candidates |
+| Category | Analyzers (matched to the deployed instance, 2026-11-05) |
 |---|---|
-| Tor and blocklists | TorProject, FireHol_IPList, TalosReputation |
+| Tor and blocklists | TorProject, Tor_Nodes_DanMeUk, FireHol_IPList, Feodo_Tracker, Stratosphere_Blacklist, TalosReputation, PhishingArmy |
 | GeoIP | MaxMindGeoIP (needs a MaxMind license key for database updates) |
 
 Internal MISP and OpenCTI lookups are not on the list.
@@ -247,11 +258,86 @@ An analyzer may make network calls only if no call ever carries the indicator or
   own. An internal DNS server that forwards to a public resolver carries the indicator out with it.
 
 Each analyzer's decision is recorded here, with the date and who made it, before it goes on an
-allowlist:
+allowlist. The table covers all 67 analyzers the deployed instance marks RED-safe (219 analyzers
+listed, 2026-11-05). The network-call column is drawn from what each analyzer is built to do, and
+is confirmed against its configuration on the instance before sign-off. **Off** means the analyzer
+passes the rule but is outside the selected categories; it can be added later without a new
+review. **Refuse** means it fails the rule and cannot be added without one.
+
+Five of these do worse than disclose to a third party. DownloadFileFromUri, Nuclei, Onionscan,
+Thug_URL_Info and Thug_HTML_Info make contact with the infrastructure under investigation, which
+tells the adversary directly. All five are marked RED-safe by the instance. That is the case for
+the post-job check in 6.3 in one line.
 
 | Analyzer | Network calls | Carries the indicator? | Decision | By | Date |
 |---|---|---|---|---|---|
-| *(filled from the probe output)* | | | | | |
+| APK_Artifacts | None | No | Off: Android | pending | 2026-11-05 |
+| APKiD | None | No | Off: Android | pending | 2026-11-05 |
+| Androguard | None | No | Off: Android | pending | 2026-11-05 |
+| Blint | None | No | Allow | pending | 2026-11-05 |
+| BoxJS | None; JavaScript is emulated locally | No | Allow | pending | 2026-11-05 |
+| Capa_Info | None | No | Allow | pending | 2026-11-05 |
+| Capa_Info_Shellcode | None | No | Off: raw shellcode only | pending | 2026-11-05 |
+| ClamAV | Signature updates | No | Allow | pending | 2026-11-05 |
+| Cuckoo_Scan | Submits the file to a Cuckoo server | Yes, the file | Refuse | pending | 2026-11-05 |
+| DetectItEasy | None | No | Allow | pending | 2026-11-05 |
+| Doc_Info | None | No | Allow | pending | 2026-11-05 |
+| Droidlysis | None | No | Off: Android | pending | 2026-11-05 |
+| ELF_Info | None | No | Allow | pending | 2026-11-05 |
+| File_Info | None | No | Allow | pending | 2026-11-05 |
+| Floss | None | No | Allow | pending | 2026-11-05 |
+| GoReSym | None | No | Allow | pending | 2026-11-05 |
+| Hfinger | None | No | Off: PCAPs excluded | pending | 2026-11-05 |
+| IocExtract | None | No | Allow | pending | 2026-11-05 |
+| IocFinder | None | No | Allow | pending | 2026-11-05 |
+| Lnk_Info | None | No | Allow | pending | 2026-11-05 |
+| MISPFIRST_Check_Hash | Queries FIRST's MISP | Yes, the hash | Refuse | pending | 2026-11-05 |
+| MISP_Check_Hash | Queries a MISP server | Yes, the hash | Refuse | pending | 2026-11-05 |
+| MachoInfo | None | No | Allow | pending | 2026-11-05 |
+| MobSF | Sends the file to a MobSF service | Yes, the file | Off: mobile | pending | 2026-11-05 |
+| OneNote_Info | None | No | Allow | pending | 2026-11-05 |
+| PDF_Info | None | No | Allow | pending | 2026-11-05 |
+| PE_Info | None | No | Allow | pending | 2026-11-05 |
+| PEframe_Scan | None | No | Allow | pending | 2026-11-05 |
+| Permhash | None | No | Off: Android and browser extensions | pending | 2026-11-05 |
+| Qiling_Linux | Emulated execution | To confirm | Off: dynamic; revisit after the static set is in beta | pending | 2026-11-05 |
+| Qiling_Linux_Shellcode | Emulated execution | To confirm | Off: dynamic; revisit after the static set is in beta | pending | 2026-11-05 |
+| Qiling_Windows | Emulated execution | To confirm | Off: dynamic; revisit after the static set is in beta | pending | 2026-11-05 |
+| Qiling_Windows_Shellcode | Emulated execution | To confirm | Off: dynamic; revisit after the static set is in beta | pending | 2026-11-05 |
+| Quark_Engine | None | No | Off: Android | pending | 2026-11-05 |
+| Rtf_Info | None | No | Allow | pending | 2026-11-05 |
+| Signature_Info | None | No | Allow | pending | 2026-11-05 |
+| SpeakEasy | Emulated execution | To confirm | Off: dynamic; revisit after the static set is in beta | pending | 2026-11-05 |
+| SpeakEasy_Shellcode | Emulated execution | To confirm | Off: dynamic; revisit after the static set is in beta | pending | 2026-11-05 |
+| Strings_Info | None | No | Off: strings extraction dropped | pending | 2026-11-05 |
+| Suricata | None | No | Off: PCAPs excluded | pending | 2026-11-05 |
+| Thug_HTML_Info | Fetches what the HTML references | Yes, contacts those hosts | Refuse | pending | 2026-11-05 |
+| Xlm_Macro_Deobfuscator | None | No | Allow | pending | 2026-11-05 |
+| Yara | Rule updates | No | Allow | pending | 2026-11-05 |
+| YaraX | Rule updates | No | Off: duplicates Yara | pending | 2026-11-05 |
+| Zippy_scan | None | No | Off: not relevant to evidence analysis | pending | 2026-11-05 |
+| AILTypoSquatting | DNS, if resolution is enabled | Yes, when enabled | Allow only with resolution off; confirm the setting | pending | 2026-11-05 |
+| CheckDMARC | DNS lookups | Yes | Refuse | pending | 2026-11-05 |
+| CleanBrowsing_Malicious_Detector | Public DNS resolver | Yes | Refuse | pending | 2026-11-05 |
+| CyberChef | None | No | Off: a transform tool, not intelligence | pending | 2026-11-05 |
+| DownloadFileFromUri | Fetches the URL | Yes, contacts the adversary | Refuse | pending | 2026-11-05 |
+| Feodo_Tracker | Feed download | No | Allow | pending | 2026-11-05 |
+| FireHol_IPList | Feed download | No | Allow | pending | 2026-11-05 |
+| IP2WHOIS | External API | Yes | Refuse | pending | 2026-11-05 |
+| Ip2location | External API | Yes | Refuse | pending | 2026-11-05 |
+| LeakIx | External API | Yes | Refuse | pending | 2026-11-05 |
+| MaxMindGeoIP | Database download | No | Allow | pending | 2026-11-05 |
+| Mullvad_DNS | Public DNS resolver | Yes | Refuse | pending | 2026-11-05 |
+| Nuclei | Scans the target | Yes, contacts the adversary | Refuse | pending | 2026-11-05 |
+| Onionscan | Connects to the onion service | Yes, contacts the adversary | Refuse | pending | 2026-11-05 |
+| PhishingArmy | Feed download | No | Allow | pending | 2026-11-05 |
+| Phunter | Web lookups | Yes | Refuse | pending | 2026-11-05 |
+| Stratosphere_Blacklist | Feed download | No | Allow | pending | 2026-11-05 |
+| TalosReputation | Feed download | No | Allow | pending | 2026-11-05 |
+| Thug_URL_Info | Visits the URL | Yes, contacts the adversary | Refuse | pending | 2026-11-05 |
+| TorProject | Feed download | No | Allow | pending | 2026-11-05 |
+| Tor_Nodes_DanMeUk | Feed download | No | Allow | pending | 2026-11-05 |
+| TweetFeed | TweetFeed API | To confirm | **Open**: allow only if it downloads the feed and matches locally | pending | 2026-11-05 |
 
 ## 10. Network
 
