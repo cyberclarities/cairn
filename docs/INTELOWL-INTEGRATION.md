@@ -357,6 +357,11 @@ These are policy, and the integration is only as contained as they are.
   that is allowed at all, it is a separate decision and should be written down as one.
 - **Analyzer configuration changes.** A change to an analyzer's TLP settings in IntelOwl changes
   what RED means. Section 6.3 catches it after the fact. A change process catches it before.
+- **IntelOwl's own analyzer settings are left as they are.** Decided 2026-11-05: the refused
+  analyzers in 9.1 are not disabled or re-labeled in IntelOwl. CAIRN's allowlist (5.3) and the
+  post-job check (6.3) are the controls for CAIRN-submitted jobs. Anyone using IntelOwl directly at
+  RED can still run the refused analyzers, including the five that contact the adversary, which
+  makes the direct-use decision above the one that covers that gap.
 - **Backups.** IntelOwl's data is outside CAIRN's snapshots and retention. Deleting jobs on
   completion (6.4) is what keeps that gap empty.
 
