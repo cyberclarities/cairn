@@ -95,7 +95,12 @@ work asynchronously.
 3. For files: CAIRN refuses the excluded evidence types in 9.1, then re-hashes the stored file against `hash_sha256`. A mismatch stops the submission
    and writes a custody entry, the same as a mismatched download.
 4. CAIRN posts to IntelOwl with `tlp=RED`, `analyzers_requested` set from the matching allowlist,
-   and `connectors_requested` empty.
+   and `connectors_requested` empty. Where an allowlisted analyzer has a setting that would make it
+   send the indicator, CAIRN pins the safe value in `runtime_configuration` on every job rather than
+   relying on the value stored in IntelOwl. Today that is two analyzers: AILTypoSquatting
+   `dns_resolving: false`, and TweetFeed `time: month` with `filter1` empty, which keeps the lookup
+   against the local 30-day copy and stops a stored `year` setting from making a call at lookup
+   time. A setting pinned here is listed in 9.1 beside its analyzer.
 5. The returned IntelOwl job ID is stored on the row. The audit log records the submission.
 
 ### 6.2 Collect
@@ -227,6 +232,7 @@ IocFinder pull out the strings that matter.
 |---|---|
 | Tor and blocklists | TorProject, Tor_Nodes_DanMeUk, FireHol_IPList, Feodo_Tracker, Stratosphere_Blacklist, TalosReputation, PhishingArmy |
 | GeoIP | MaxMindGeoIP (needs a MaxMind license key for database updates) |
+| Lookalike domains | AILTypoSquatting (generation only, no resolution) |
 
 Internal MISP and OpenCTI lookups are not on the list.
 
@@ -316,7 +322,7 @@ the post-job check in 6.3 in one line.
 | Yara | Rule updates | No | Allow | pending | 2026-11-05 |
 | YaraX | Rule updates | No | Off: duplicates Yara | pending | 2026-11-05 |
 | Zippy_scan | None | No | Off: not relevant to evidence analysis | pending | 2026-11-05 |
-| AILTypoSquatting | DNS, if resolution is enabled | Yes, when enabled | Allow only with resolution off; confirm the setting | pending | 2026-11-05 |
+| AILTypoSquatting | None at RED. Confirmed in the source on the instance: resolution runs only when the job is TLP CLEAR **and** `dns_resolving` is true. Both are false here | No | Allow; CAIRN still pins `dns_resolving: false` per job (6.1) | pending | 2026-11-05 |
 | CheckDMARC | DNS lookups | Yes | Refuse | pending | 2026-11-05 |
 | CleanBrowsing_Malicious_Detector | Public DNS resolver | Yes | Refuse | pending | 2026-11-05 |
 | CyberChef | None | No | Off: a transform tool, not intelligence | pending | 2026-11-05 |
@@ -337,7 +343,7 @@ the post-job check in 6.3 in one line.
 | Thug_URL_Info | Visits the URL | Yes, contacts the adversary | Refuse | pending | 2026-11-05 |
 | TorProject | Feed download | No | Allow | pending | 2026-11-05 |
 | Tor_Nodes_DanMeUk | Feed download | No | Allow | pending | 2026-11-05 |
-| TweetFeed | TweetFeed API | To confirm | **Open**: allow only if it downloads the feed and matches locally | pending | 2026-11-05 |
+| TweetFeed | Confirmed in the source on the instance: matches against a locally stored 30-day feed. Only `time: year` makes a call at lookup time, and that URL carries the indicator type, never the value | No | Allow; CAIRN pins `time: month`, `filter1: ""` per job (6.1) so every lookup stays local | pending | 2026-11-05 |
 
 ## 10. Network
 
@@ -386,6 +392,8 @@ In the style of `tests/test_threat_intel.py`, with IntelOwl mocked:
 - The `intelowl_jobs` row exists before the request is attempted, and survives a failed request.
 - A file whose hash does not match is not submitted, and the mismatch reaches chain of custody.
 - An analyst cannot submit a file; an admin can.
+- Every observable job that includes AILTypoSquatting carries `dns_resolving: false` in its runtime configuration.
+- Every observable job that includes TweetFeed carries `time: month` and an empty `filter1`.
 - Disk Image, Memory Dump, Network Capture and Database Dump records show no button, and the route refuses them.
 - An Email/PST record holding a parseable `.eml` can be submitted; a `.pst`, an `.ost`, or a file named `.eml` that does not parse as a message cannot.
 - A report listing an analyzer outside the allowlist is stored as `violation`, never `reported`.
