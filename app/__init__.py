@@ -79,6 +79,7 @@ def create_app():
     from .routes.assets import assets_bp
     from .routes.evidence import evidence_bp
     from .routes.timeline import timeline_bp
+    from .routes.notes import notes_bp
     from .routes.reports import reports_bp
     from .routes.case_report import case_report_bp
     from .routes.users import users_bp
@@ -92,6 +93,7 @@ def create_app():
     app.register_blueprint(assets_bp)
     app.register_blueprint(evidence_bp)
     app.register_blueprint(timeline_bp)
+    app.register_blueprint(notes_bp)
     app.register_blueprint(reports_bp)
     app.register_blueprint(case_report_bp)
     app.register_blueprint(users_bp)

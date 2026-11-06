@@ -11,8 +11,9 @@ from app.common import (
 )
 from app.decorators import analyst_required
 from app.models import (
-    db, Case, User, CaseStatusHistory, IOCEnrichment, LookupValue, TIMELINE_COLORS,
+    db, Case, CaseNote, User, CaseStatusHistory, IOCEnrichment, LookupValue, TIMELINE_COLORS,
 )
+from app.routes.notes import assignable_users
 from app.seed import MITRE_DATA
 from app.services import report_builder, threat_intel
 
@@ -206,6 +207,22 @@ def detail(case_id_int):
         for row in rows:
             ti_by_ioc.setdefault(row.ioc_id, []).append(row)
 
+    # Notes tab. Open actions are pulled out to the top; everything, actions
+    # included, is listed newest first below them. The edit form for a note
+    # shows its "occurred at" back in the zone it was entered in, using the
+    # same inverse conversion as the timeline's edit form, so saving an
+    # unchanged note does not move its time.
+    case_notes = case.notes.order_by(CaseNote.written_at.desc(), CaseNote.id.desc()).all()
+    open_actions = sorted((n for n in case_notes if n.is_open_action),
+                          key=lambda n: n.written_at)
+    note_occurred_fields = {}
+    for n in case_notes:
+        if n.occurred_at:
+            d, t = format_datetime_in_zone(n.occurred_at, n.occurred_timezone or "UTC")
+            note_occurred_fields[n.id] = {"date": d, "time": t,
+                                          "tz": n.occurred_timezone or "UTC"}
+    note_users = assignable_users()
+
     # Carried-over values from "Save & Add Another", if the last action was one.
     #
     # Popped, so a refresh or a later visit does not reopen the form. Checked
@@ -273,6 +290,10 @@ def detail(case_id_int):
         timeline_colors=timeline_colors,
         asset_options=asset_options,
         timezones=ALL_TIMEZONES,
+        case_notes=case_notes,
+        open_actions=open_actions,
+        note_occurred_fields=note_occurred_fields,
+        note_users=note_users,
         audit_entries=audit_entries,
         status_history=status_history,
         ioc_types=ioc_types,

@@ -5,6 +5,8 @@
 {% block extra_head %}
 <style>
   .nav-tabs .nav-link { font-size: 0.82rem; }
+  /* Briefly marks the item a cross-tab link jumped to (note <-> timeline entry). */
+  .cairn-flash { outline: 2px solid #fd7e14; outline-offset: 2px; transition: outline-color 0.4s; }
   .field-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: #6c757d; font-weight: 600; }
   .field-value { font-size: 0.9rem; }
   code { background: #f6f8fa; padding: 0.1em 0.35em; border-radius: 4px; font-size: 0.8rem; }
@@ -117,6 +119,7 @@
     ("iocs","IOCs (" + iocs|length|string + ")","bi-bug"),
     ("evidence","Evidence (" + evidence_items|length|string + ")","bi-archive"),
     ("timeline","Timeline (" + timeline_events|length|string + ")","bi-clock-history"),
+    ("notes","Notes (" + case_notes|length|string + ")","bi-journal-richtext"),
     ("report","Report","bi-file-earmark-text"),
     ("audit","Audit Log","bi-journal-text"),
   ] %}
@@ -634,7 +637,7 @@
       <div class="tl2-pill">{{ item.date.strftime('%m/%d/%Y') }}</div>
       {% else %}
       {% set ev = item.ev %}
-      <div class="tl2-row side-{{ item.side }}">
+      <div class="tl2-row side-{{ item.side }}" id="tl-event-{{ ev.id }}">
         <div class="tl2-card"
              style="width: calc(46% - {{ item.depth * 1.5 }}rem); margin-{{ 'right' if item.side == 'left' else 'left' }}: calc(4% + {{ item.depth * 1.5 }}rem);{% if ev.color_hex %} --tl2-color: {{ ev.color_hex }};{% endif %}">
           {% if item.depth > 0 %}
@@ -659,6 +662,13 @@
             {% if ev.mitre_technique_id %}<span class="badge bg-secondary"><a href="https://attack.mitre.org/techniques/{{ ev.mitre_technique_id.replace('.','/')}}/" target="_blank" class="text-white text-decoration-none">{{ ev.mitre_technique_id }}</a></span>{% endif %}
             {% if ev.mitre_technique %}<span class="text-muted small">{{ ev.mitre_technique }}</span>{% endif %}
             <span class="badge bg-{{ ev.confidence_color }}">{{ ev.confidence }}</span>
+            {% if ev.source_note %}
+            <a href="#notes" data-goto-tab="notes" data-goto-id="note-{{ ev.source_note.id }}"
+               class="badge bg-light text-dark border text-decoration-none"
+               title="This entry was made from a case note; edit the note to change it.">
+              <i class="bi bi-journal-richtext"></i> From {{ 'action' if ev.source_note.is_action else 'note' }}
+            </a>
+            {% endif %}
           </div>
           <p class="mb-1 small">
             {% if ev.description|length > 220 %}
@@ -690,6 +700,210 @@
     {% else %}
     <p class="text-muted small">No timeline events recorded yet.</p>
     {% endif %}
+  </div>
+
+  <!-- NOTES TAB -->
+  <div class="tab-pane fade" id="notes">
+    {#
+      Two times are shown for a note and they mean different things. "Written"
+      is when it was saved and never changes. "Occurred" is when the thing it
+      describes happened, if the analyst said; the timeline uses that when it
+      is there. See CaseNote in app/models.py.
+    #}
+    {% if current_user.is_analyst %}
+    <form method="POST" action="{{ url_for('notes.add_note', case_id_int=case.id) }}"
+          class="card card-body bg-light mb-3" data-note-form="new">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="d-flex flex-wrap gap-3 mb-2 align-items-center">
+        <div class="btn-group btn-group-sm" role="group" aria-label="Note or action">
+          <input type="radio" class="btn-check" name="kind" id="noteKind-new-note" value="note" checked>
+          <label class="btn btn-outline-secondary" for="noteKind-new-note"><i class="bi bi-sticky"></i> Note</label>
+          <input type="radio" class="btn-check" name="kind" id="noteKind-new-action" value="action">
+          <label class="btn btn-outline-secondary" for="noteKind-new-action"><i class="bi bi-check2-square"></i> Action</label>
+        </div>
+        <div class="form-check ms-auto mb-0">
+          <input class="form-check-input" type="checkbox" name="add_to_timeline" value="1"
+                 id="noteTimeline-new" data-timeline-box>
+          <label class="form-check-label small" for="noteTimeline-new">Add to timeline</label>
+        </div>
+      </div>
+      <textarea name="body" class="form-control form-control-sm mb-2" rows="3" maxlength="20000" required
+                placeholder="What happened, what was decided, or what needs doing?"></textarea>
+      <div class="row g-2 align-items-end">
+        <div class="col-6 col-md-3">
+          <label class="form-label small fw-semibold mb-1">Occurred (optional)</label>
+          <input type="date" name="occurred_date" class="form-control form-control-sm">
+        </div>
+        <div class="col-6 col-md-2">
+          <label class="form-label small fw-semibold mb-1">Time</label>
+          <input type="time" name="occurred_time" class="form-control form-control-sm">
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label small fw-semibold mb-1">Timezone</label>
+          <select name="occurred_timezone" class="form-select form-select-sm">
+            {% for tz in timezones %}<option value="{{ tz }}" {% if tz == 'UTC' %}selected{% endif %}>{{ tz }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-12 col-md-3" data-owner-field hidden>
+          <label class="form-label small fw-semibold mb-1">Owner</label>
+          <select name="owner_id" class="form-select form-select-sm">
+            <option value="">Unassigned</option>
+            {% for u in note_users %}<option value="{{ u.id }}">{{ u.name }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="col-12 col-md-1 ms-md-auto text-end">
+          <button class="btn btn-sm btn-danger">Save</button>
+        </div>
+      </div>
+      <div class="form-text">Leave "occurred" blank if it happened as you write it. The time it was written is recorded either way and never changes.</div>
+    </form>
+    {% endif %}
+
+    {% if open_actions %}
+    <div class="small fw-semibold text-uppercase text-muted mb-1">Open actions ({{ open_actions|length }})</div>
+    <ul class="list-group mb-3">
+      {% for n in open_actions %}
+      <li class="list-group-item py-2 small d-flex gap-2 align-items-start">
+        {% if current_user.is_analyst %}
+        <form method="POST" action="{{ url_for('notes.set_status', case_id_int=case.id, note_id=n.id) }}" class="flex-shrink-0">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="status" value="Done">
+          <button class="btn btn-sm btn-outline-success py-0 px-2" title="Mark done"><i class="bi bi-check-lg"></i> Done</button>
+        </form>
+        {% endif %}
+        <div class="flex-grow-1">
+          <a href="#notes" data-goto-tab="notes" data-goto-id="note-{{ n.id }}" class="text-body">{{ n.body[:160] }}{{ '…' if n.body|length > 160 }}</a>
+          <div class="text-muted">
+            {{ n.owner.name if n.owner else 'Unassigned' }} · opened {{ n.written_at.strftime('%Y-%m-%d %H:%M') }} UTC{% if n.written_by %} by {{ n.written_by.name }}{% endif %}
+          </div>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% for n in case_notes %}
+    {% set can_edit = current_user.is_admin or (current_user.is_analyst and n.written_by_id == current_user.id) %}
+    {% set revs = n.revisions.all() %}
+    <div class="card mb-2" id="note-{{ n.id }}">
+      <div class="card-body py-2 px-3 small">
+        <div class="d-flex gap-2 align-items-start mb-1">
+          <div class="d-flex flex-wrap gap-2 align-items-center flex-grow-1">
+          <span class="badge {{ 'bg-primary' if n.is_action else 'bg-secondary' }}">{{ 'Action' if n.is_action else 'Note' }}</span>
+          {% if n.is_action %}<span class="badge {{ 'bg-warning text-dark' if n.status == 'Open' else 'bg-success' }}">{{ n.status }}</span>{% endif %}
+          <span class="fw-semibold">Written {{ n.written_at.strftime('%Y-%m-%d %H:%M') }} UTC</span>
+          <span class="text-muted">by {{ n.written_by.name if n.written_by else 'unknown' }}</span>
+          {% if n.occurred_at %}
+          <span class="text-muted">· occurred {{ n.occurred_at.strftime('%Y-%m-%d %H:%M') }} UTC{% if n.occurred_timezone and n.occurred_timezone != 'UTC' %} (entered as {{ n.occurred_timezone }}){% endif %}</span>
+          {% endif %}
+          {% if n.timeline_event_id %}
+          <a href="#timeline" data-goto-tab="timeline" data-goto-id="tl-event-{{ n.timeline_event_id }}"
+             class="badge bg-light text-dark border text-decoration-none"><i class="bi bi-clock-history"></i> On timeline</a>
+          {% endif %}
+          </div>
+          <span class="d-flex gap-1 flex-shrink-0">
+            {% if n.is_action and current_user.is_analyst %}
+            <form method="POST" action="{{ url_for('notes.set_status', case_id_int=case.id, note_id=n.id) }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="status" value="{{ 'Done' if n.status == 'Open' else 'Open' }}">
+              <button class="btn btn-xs btn-sm btn-outline-{{ 'success' if n.status == 'Open' else 'secondary' }} py-0 px-2">
+                {{ 'Mark done' if n.status == 'Open' else 'Reopen' }}
+              </button>
+            </form>
+            {% endif %}
+            {% if can_edit %}
+            <button type="button" class="btn btn-xs btn-sm btn-outline-secondary py-0 px-2" title="Edit"
+                    data-bs-toggle="collapse" data-bs-target="#note-edit-{{ n.id }}"><i class="bi bi-pencil"></i></button>
+            {% endif %}
+            {% if current_user.is_admin %}
+            <form method="POST" action="{{ url_for('notes.delete_note', case_id_int=case.id, note_id=n.id) }}"
+                  onsubmit="return confirm('Delete this note? It stays in the audit log.{% if n.timeline_event_id %} Its timeline entry will be kept.{% endif %}')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="btn btn-xs btn-sm btn-outline-danger py-0 px-2" title="Delete"><i class="bi bi-trash"></i></button>
+            </form>
+            {% endif %}
+          </span>
+        </div>
+        {% if n.is_action %}
+        <div class="text-muted mb-1">
+          Owner: {{ n.owner.name if n.owner else 'unassigned' }}
+          {% if n.status == 'Done' and n.completed_at %}· done {{ n.completed_at.strftime('%Y-%m-%d %H:%M') }} UTC{% if n.completed_by %} by {{ n.completed_by.name }}{% endif %}{% endif %}
+        </div>
+        {% endif %}
+        <div style="white-space:pre-wrap">{{ n.body }}</div>
+        {% if n.updated_at %}
+        <div class="text-muted fst-italic mt-1">Edited {{ n.updated_at.strftime('%Y-%m-%d %H:%M') }} UTC{% if n.updated_by %} by {{ n.updated_by.name }}{% endif %}</div>
+        {% endif %}
+        {% if revs %}
+        <details class="mt-1">
+          <summary class="text-muted">Earlier versions ({{ revs|length }})</summary>
+          {% for r in revs %}
+          <div class="border-start ps-2 mt-2">
+            <div class="text-muted">
+              Replaced {{ r.edited_at.strftime('%Y-%m-%d %H:%M') }} UTC{% if r.edited_by %} by {{ r.edited_by.name }}{% endif %}.
+              Was a{{ 'n action' if r.kind == 'action' else ' note' }}{% if r.occurred_at %}, occurred {{ r.occurred_at.strftime('%Y-%m-%d %H:%M') }} UTC{% endif %}:
+            </div>
+            <div style="white-space:pre-wrap">{{ r.body }}</div>
+          </div>
+          {% endfor %}
+        </details>
+        {% endif %}
+
+        {% if can_edit %}
+        {% set occ = note_occurred_fields.get(n.id, {}) %}
+        <form method="POST" action="{{ url_for('notes.edit_note', case_id_int=case.id, note_id=n.id) }}"
+              class="collapse mt-2 border-top pt-2" id="note-edit-{{ n.id }}"
+              data-note-form="edit" data-on-timeline="{{ '1' if n.timeline_event_id else '0' }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <div class="d-flex flex-wrap gap-3 mb-2 align-items-center">
+            <div class="btn-group btn-group-sm" role="group">
+              <input type="radio" class="btn-check" name="kind" id="noteKind-{{ n.id }}-note" value="note" {% if not n.is_action %}checked{% endif %}>
+              <label class="btn btn-outline-secondary" for="noteKind-{{ n.id }}-note">Note</label>
+              <input type="radio" class="btn-check" name="kind" id="noteKind-{{ n.id }}-action" value="action" {% if n.is_action %}checked{% endif %}>
+              <label class="btn btn-outline-secondary" for="noteKind-{{ n.id }}-action">Action</label>
+            </div>
+            <div class="form-check ms-auto mb-0">
+              <input class="form-check-input" type="checkbox" name="add_to_timeline" value="1"
+                     id="noteTimeline-{{ n.id }}" data-timeline-box {% if n.timeline_event_id %}checked{% endif %}>
+              <label class="form-check-label small" for="noteTimeline-{{ n.id }}">On timeline</label>
+            </div>
+          </div>
+          <textarea name="body" class="form-control form-control-sm mb-2" rows="3" maxlength="20000" required>{{ n.body }}</textarea>
+          <div class="row g-2 align-items-end">
+            <div class="col-6 col-md-3">
+              <label class="form-label small fw-semibold mb-1">Occurred</label>
+              <input type="date" name="occurred_date" class="form-control form-control-sm" value="{{ occ.get('date', '') }}">
+            </div>
+            <div class="col-6 col-md-2">
+              <label class="form-label small fw-semibold mb-1">Time</label>
+              <input type="time" name="occurred_time" class="form-control form-control-sm" value="{{ occ.get('time', '') }}">
+            </div>
+            <div class="col-12 col-md-3">
+              <label class="form-label small fw-semibold mb-1">Timezone</label>
+              <select name="occurred_timezone" class="form-select form-select-sm">
+                {% set occ_tz = occ.get('tz', 'UTC') %}
+                {% for tz in timezones %}<option value="{{ tz }}" {% if tz == occ_tz %}selected{% endif %}>{{ tz }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="col-12 col-md-3" data-owner-field {% if not n.is_action %}hidden{% endif %}>
+              <label class="form-label small fw-semibold mb-1">Owner</label>
+              <select name="owner_id" class="form-select form-select-sm">
+                <option value="">Unassigned</option>
+                {% for u in note_users %}<option value="{{ u.id }}" {% if u.id == n.owner_id %}selected{% endif %}>{{ u.name }}</option>{% endfor %}
+              </select>
+            </div>
+            <div class="col-12 col-md-1 ms-md-auto text-end">
+              <button class="btn btn-sm btn-primary">Save</button>
+            </div>
+          </div>
+          <div class="form-text">The current text is kept under "Earlier versions" when you save a change.{% if n.timeline_event_id %} Its timeline entry is updated to match.{% endif %}</div>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    {% else %}
+    <p class="text-muted small">No notes yet.</p>
+    {% endfor %}
   </div>
 
   <!-- REPORT TAB -->
@@ -1545,6 +1759,52 @@ document.addEventListener('DOMContentLoaded', () => {
   if (hash) {
     const tab = document.querySelector(`[data-bs-target="${hash}"]`);
     if (tab) new bootstrap.Tab(tab).show();
+  }
+});
+
+// Links between tabs: a note's "On timeline" badge and a timeline card's
+// "From note" badge switch to the other tab, then scroll to and briefly
+// highlight the matching item.
+document.addEventListener('click', (e) => {
+  const link = e.target.closest('[data-goto-tab]');
+  if (!link) return;
+  e.preventDefault();
+  const tab = document.querySelector(`[data-bs-target="#${link.dataset.gotoTab}"]`);
+  if (tab) new bootstrap.Tab(tab).show();
+  setTimeout(() => {
+    const found = document.getElementById(link.dataset.gotoId);
+    if (!found) return;
+    // A timeline row spans both halves of the timeline; mark the card itself.
+    const el = found.querySelector('.tl2-card') || found;
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    el.classList.add('cairn-flash');
+    setTimeout(() => el.classList.remove('cairn-flash'), 1800);
+  }, 180);
+});
+
+// Note forms. The owner field exists only for actions. On a new entry,
+// "Add to timeline" follows the kind (on for an action, off for a note) until
+// the analyst sets it themselves. On an edit, unticking it removes the entry
+// from the timeline, so that is confirmed first.
+document.querySelectorAll('[data-note-form]').forEach((form) => {
+  const box = form.querySelector('[data-timeline-box]');
+  const owner = form.querySelector('[data-owner-field]');
+  let touched = form.dataset.noteForm !== 'new';
+  if (box) box.addEventListener('change', () => { touched = true; });
+  const apply = () => {
+    const picked = form.querySelector('[name="kind"]:checked');
+    const kind = picked ? picked.value : 'note';
+    if (owner) owner.hidden = kind !== 'action';
+    if (box && !touched) box.checked = kind === 'action';
+  };
+  form.querySelectorAll('[name="kind"]').forEach((r) => r.addEventListener('change', apply));
+  apply();
+  if (form.dataset.onTimeline === '1') {
+    form.addEventListener('submit', (e) => {
+      if (box && !box.checked && !confirm('Untick "On timeline" removes this note\'s entry from the timeline. Continue?')) {
+        e.preventDefault();
+      }
+    });
   }
 });
 

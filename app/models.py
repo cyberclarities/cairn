@@ -166,6 +166,7 @@ class Case(db.Model):
     status_history = db.relationship("CaseStatusHistory", backref="case", lazy="dynamic", cascade="all, delete-orphan")
     deviations = db.relationship("CaseDeviation", backref="case", lazy="dynamic", cascade="all, delete-orphan")
     recommendations = db.relationship("Recommendation", backref="case", lazy="dynamic", cascade="all, delete-orphan")
+    notes = db.relationship("CaseNote", backref="case", lazy="dynamic", cascade="all, delete-orphan")
 
     @property
     def severity_color(self):
@@ -909,3 +910,122 @@ class Alert(db.Model):
 
     def __repr__(self):
         return f"<Alert {self.source}:{self.external_id} [{self.status}]>"
+
+
+# ---------------------------------------------------------------------------
+# Case notes
+# ---------------------------------------------------------------------------
+
+NOTE_KINDS = ("note", "action")
+ACTION_STATUSES = ("Open", "Done")
+
+
+class CaseNote(db.Model):
+    """
+    A note or an action recorded against a case.
+
+    Two times, kept apart on purpose. written_at is when the note was saved: set
+    by the server, never edited, and the honest answer to "when did we write
+    this down". occurred_at is when the thing it describes happened, entered by
+    the analyst and optional. "Called the ISP at 14:10" written up at 16:40
+    needs both, and conflating them is how a timeline ends up claiming things
+    happened when someone got round to typing them.
+
+    occurred_at is stored in UTC, with the zone it was entered in kept beside
+    it, the same convention as TimelineEvent.
+
+    An action carries a status (Open/Done) and an optional owner. A plain note
+    carries neither; status stays NULL rather than defaulting to something that
+    would make a note look like unfinished work.
+
+    timeline_event_id links the note to the timeline entry made from it, when
+    the analyst asked for one. ON DELETE SET NULL: deleting the timeline entry
+    must not delete the note, and the note then simply shows as not on the
+    timeline.
+
+    Edits are allowed, by the author or an admin, but every edit first copies
+    the prior version into CaseNoteRevision. Nothing an analyst wrote is lost
+    to a later edit.
+    """
+
+    __tablename__ = "case_notes"
+
+    id = db.Column(db.Integer, primary_key=True)
+    case_id = db.Column(db.Integer, db.ForeignKey("cases.id"), nullable=False, index=True)
+
+    kind = db.Column(db.String(16), nullable=False, default="note")   # note | action
+    body = db.Column(db.Text, nullable=False)
+
+    written_at = db.Column(db.DateTime, nullable=False, default=utcnow, index=True)
+    written_by_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    written_by = db.relationship("User", foreign_keys=[written_by_id])
+
+    occurred_at = db.Column(db.DateTime, nullable=True)
+    occurred_timezone = db.Column(db.String(64), nullable=True)
+
+    # Actions only.
+    status = db.Column(db.String(8), nullable=True, index=True)       # Open | Done
+    owner_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    owner = db.relationship("User", foreign_keys=[owner_id])
+    completed_at = db.Column(db.DateTime, nullable=True)
+    completed_by_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    completed_by = db.relationship("User", foreign_keys=[completed_by_id])
+
+    timeline_event_id = db.Column(
+        db.Integer, db.ForeignKey("timeline_events.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    timeline_event = db.relationship(
+        "TimelineEvent", foreign_keys=[timeline_event_id],
+        backref=db.backref("source_note", uselist=False),
+    )
+
+    updated_at = db.Column(db.DateTime, nullable=True)
+    updated_by_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_by = db.relationship("User", foreign_keys=[updated_by_id])
+
+    revisions = db.relationship(
+        "CaseNoteRevision", backref="note", lazy="dynamic",
+        cascade="all, delete-orphan", passive_deletes=True,
+        order_by="CaseNoteRevision.id.desc()",
+    )
+
+    @property
+    def is_action(self):
+        return self.kind == "action"
+
+    @property
+    def is_open_action(self):
+        return self.kind == "action" and self.status == "Open"
+
+    @property
+    def timeline_time(self):
+        """The time this note is placed at on the timeline: when it happened if known."""
+        return self.occurred_at or self.written_at
+
+    def __repr__(self):
+        return f"<CaseNote {self.id} {self.kind} case={self.case_id}>"
+
+
+class CaseNoteRevision(db.Model):
+    """
+    A prior version of a CaseNote, saved immediately before an edit replaced it.
+
+    The row holds what the note said, and when it said it occurred, up to the
+    moment of the edit; edited_at/edited_by say who replaced it and when. Read
+    newest first, the revisions walk the note back to what was first written.
+    """
+
+    __tablename__ = "case_note_revisions"
+
+    id = db.Column(db.Integer, primary_key=True)
+    note_id = db.Column(
+        db.Integer, db.ForeignKey("case_notes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    kind = db.Column(db.String(16), nullable=False)
+    body = db.Column(db.Text, nullable=False)
+    occurred_at = db.Column(db.DateTime, nullable=True)
+    occurred_timezone = db.Column(db.String(64), nullable=True)
+    edited_at = db.Column(db.DateTime, nullable=False, default=utcnow)
+    edited_by_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    edited_by = db.relationship("User", foreign_keys=[edited_by_id])
