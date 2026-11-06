@@ -3,10 +3,10 @@
 | | |
 |---|---|
 | **Product** | CAIRN, self-hosted incident case management console |
-| **Version** | 1.2.1 (`VERSION`) |
+| **Version** | 1.2.3 (`VERSION`) |
 | **Publisher** | Cyberclarities |
 | **Product license** | MIT |
-| **Source state** | `main` @ `d9762d0` ("Spellcheck") plus the dependency and base-image updates released as 1.2.1 |
+| **Source state** | `main` @ `5994272` ("SBOM update", release 1.2.1) plus `update.sh` (1.2.2) and `UPDATING.md` (1.2.3). Components are unchanged from 1.2.1. |
 | **SBOM date** | 2026-11-06 |
 | **Prepared by** | Claude (AI assistant) for Ted Mecimore. Owner review pending. |
 | **Formats** | This document, plus a machine-readable SPDX 3.0 manifest in `_manifest/spdx_3.0/` |
@@ -43,7 +43,7 @@ The previous SBOM was dated 2026-08-13. Between then and now, eleven new advisor
 
 ## 3. How this inventory was built
 
-1. **Source:** the 100 files tracked by git on `main` @ `d9762d0`, with the 1.2.1 changes applied. `.env` and `CODE_REVIEW.md` are not tracked and are not included.
+1. **Source:** the 102 files tracked by git on `main` @ `5994272`, with `update.sh` (1.2.2) and `UPDATING.md` (1.2.3) added. `.env` and `CODE_REVIEW.md` are not tracked and are not included.
 2. **Python packages:** resolved by `pip install --dry-run --report` for the production target (CPython 3.12, `musllinux_1_2_x86_64`, the platform of `python:3.12-alpine3.24`). Versions and licenses were read from the package metadata in that report. `psycopg2` builds from source and declares no Python dependencies; its version is from `requirements.txt` and its license from its PyPI metadata.
 3. **Vulnerabilities:** `pip-audit` 2.10.1 run against every resolved package, pinned exactly, on 2026-11-06. Sources: PyPI Advisory Database and GitHub Security Advisories. Result in §9.
 4. **Tests:** the full suite (435 tests) passed against the upgraded set on 2026-11-06, on Python 3.13 with PostgreSQL 16. It was not run on the Python 3.12 Alpine image itself; see §10.
@@ -235,7 +235,7 @@ authlib 1.9.0 now rejects an ID token whose nonce is missing or does not match. 
 
 ## 11. Recommendations
 
-1. **Deploy 1.2.1 with fresh images.** On the server: `docker compose pull`, then `docker compose up -d --build --pull always`. The pull brings `postgres` and `caddy` current; `--pull always` makes the build fetch the current Python base rather than a cached one. Then run the checks in §10.3 and sign in with SSO.
+1. **Deploy with fresh images, using `./update.sh`.** It backs up the database, pulls the code and current `postgres` and `caddy` images, rebuilds on the current Python base, and reports the versions now running (the checks in §10.3). Run it monthly even without new code, so the base images pick up their fixes. After moving to 1.2.1 or later, sign in with SSO once.
 2. **Commit a lockfile with hashes.** `pip-compile --generate-hashes` (pip-tools) or `uv pip compile --generate-hashes` produces a fully pinned file; the Dockerfile installs it with `--require-hashes`. Closes gaps 1 and 5, and makes the next SBOM a read of a file.
 3. **Pin images by digest and scan them.** Record the digests (gap 2), pin them in the Dockerfile and compose file, and run a container scanner on each rebuild. Closes gaps 2 and 4.
 4. **Run `pip-audit` on a schedule.** Between 2026-08-13 and 2026-11-06, the count of open advisories against unchanged pins went from 11 to 20. Monthly is enough to keep that gap short.

@@ -24,6 +24,7 @@ env
 *.sqlite
 *.sqlite3
 data
+backups
 *.sql
 *.sql.gz
 *.log

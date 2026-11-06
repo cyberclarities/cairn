@@ -24,6 +24,8 @@ build/
 *.sqlite
 *.sqlite3
 data/
+# Database backups written by update.sh. They hold case data.
+backups/
 *.sql
 *.sql.gz
 

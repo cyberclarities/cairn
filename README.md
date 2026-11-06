@@ -161,6 +161,30 @@ The script is idempotent. It creates the role, and hands it the database, the `p
 and every existing table. The app logs a warning at startup if it is still connected as a
 superuser.
 
+## Updating
+
+The full guide, including what to do when the script stops and how to restore a backup, is
+[`UPDATING.md`](UPDATING.md). In short, on the server, from the CAIRN folder:
+
+```bash
+./update.sh --check   # what would change; changes nothing
+./update.sh           # back up, update, rebuild, verify
+```
+
+The script refuses to start if the folder is not on `main`, has local edits, or the database is
+at a schema revision the incoming code does not know (which happens when a removed feature branch
+moved it forward). Otherwise it takes a compressed database backup into `backups/` (readable by
+the server user only, never committed, never copied into the image), pulls the code, pulls fresh
+`postgres` and `caddy` images, rebuilds on the current Python base, and waits for CAIRN to answer.
+It ends by printing the version now running and the Alpine, Python, PostgreSQL and Caddy versions
+under it. If the update fails part way, it prints the commands to go back to the previous version.
+
+Run it even when no new code is expected: it is also how the base images pick up their security
+fixes. `./update.sh --yes` skips the confirmation prompt, for a scheduled run.
+
+Backups in `backups/` are not deleted automatically. They hold case data; prune them on the same
+schedule as any other copy of it.
+
 ## Development
 
 ```bash
