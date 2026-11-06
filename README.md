@@ -179,6 +179,8 @@ do by default. Point `DATABASE_URL` at a real Postgres instance for local develo
 
 ## Security
 
+Our goal is to review the code, scripts, libraries., and dontainers we are deploying to kee pthem properly updated. We will update the SBOM to detail this.
+
 If you find a security issue, please do not open a public GitHub issue. See
 [`SECURITY.md`](SECURITY.md) for how to report it privately.
 
