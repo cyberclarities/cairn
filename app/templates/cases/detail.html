@@ -300,17 +300,6 @@
     {% endif %}
 
     {% if iocs %}
-    {% if current_user.is_analyst and ti_any_configured %}
-    <div class="alert alert-warning py-2 small mb-3">
-      <strong>Looking one up sends it outside this deployment.</strong>
-      A lookup tells the provider you are interested in that indicator — and for a
-      file hash, that you hold the sample. On targeted activity that can reach the
-      actor. Nothing is uploaded and nothing is submitted for scanning; private and
-      reserved addresses are refused before a request is built. Every attempt is
-      written to the case audit log.
-    </div>
-    {% endif %}
-
     <form method="POST" action="{{ url_for('iocs.enrich_selected', case_id_int=case.id) }}"
           id="iocEnrichForm">
       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
