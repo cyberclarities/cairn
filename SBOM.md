@@ -1,241 +1,258 @@
-# CAIRN — Software Bill of Materials
+# CAIRN: Software Bill of Materials
 
 | | |
 |---|---|
-| **Product** | CAIRN — self-hosted incident case management console |
+| **Product** | CAIRN, self-hosted incident case management console |
+| **Version** | 1.2.1 (`VERSION`) |
 | **Publisher** | Cyberclarities |
 | **Product license** | MIT |
-| **Source state** | `main` @ `b3f359d512bb1e14ba854d8b038f929a8f8f6174` (committed 2026-08-11) |
-| **SBOM date** | 2026-08-13 |
-| **SBOM author** | Ted Mecimore |
-| **Format** | Human-readable Markdown |
-| **Component count** | 39 Python packages · 3 container base images · 5 Alpine OS packages · 2 browser-delivered libraries |
+| **Source state** | `main` @ `d9762d0` ("Spellcheck") plus the dependency and base-image updates released as 1.2.1 |
+| **SBOM date** | 2026-11-06 |
+| **Prepared by** | Claude (AI assistant) for Ted Mecimore. Owner review pending. |
+| **Formats** | This document, plus a machine-readable SPDX 3.0 manifest in `_manifest/spdx_3.0/` |
+| **Component count** | 38 Python packages (18 direct, 20 transitive) · 3 container images · 2 Alpine runtime packages (4 more in the build stage only) · 2 bundled browser libraries |
 
 ---
 
 ## 1. Background
 
-CAIRN is an incident case management console that holds case records, indicators of compromise, evidence with chain of custody, and the timeline that goes with an investigation. It runs on the operator's own infrastructure, behind their own TLS, against their own PostgreSQL instance. Nothing leaves for a third-party SaaS.
+CAIRN holds case records, indicators, evidence under chain of custody, and the timeline of an investigation. It runs on the operator's own infrastructure, behind their own TLS, against their own PostgreSQL. This document names every component that ships, where it comes from, its license, and what is known against it on the date above.
 
-That deployment model is the reason this document exists. When a customer or an auditor asks what is inside CAIRN, "it's a Flask app" is not an answer — it is a category. This SBOM names every component that ships, where it came from, what license it carries, and what is known against it as of the date above.
-
-Two things worth stating up front, because they shape how the rest of this reads:
-
-- CAIRN pins its **direct** dependencies in `requirements.txt`. It does not carry a lockfile. The transitive set below is what `pip` resolved on 2026-08-13, not what will resolve on the next build. See §9.
-- The three base images are referenced by **tag**, not digest. Tags move. The digests recorded in §5 are what those tags pointed at on the SBOM date.
+The previous SBOM was dated 2026-08-13. Between then and now, eleven new advisories landed on packages CAIRN pins, and the Alpine branch under the application image reached end of support. The pins in `requirements.txt` had not moved, so on 2026-11-06 the code as committed carried 20 known advisories. Release 1.2.1 clears all of them, and this document records the state after that release.
 
 ---
 
-## 2. How this inventory was built
+## 2. What changed since the 2026-08-13 SBOM
 
-Method matters here — an inventory nobody can reproduce is a claim, not a record.
-
-1. `requirements.txt` and `requirements-dev.txt` were read from the commit named above.
-2. The runtime set was installed into a clean Python 3.12 virtual environment. Versions and licenses were read from installed package metadata (`importlib.metadata`), not from documentation or memory.
-3. `psycopg2==2.9.10` would not compile in the build environment (no `libpq` headers). It declares **no Python dependencies**, so its absence does not change the resolved tree. Its version and license were read from the PyPI source distribution's `PKG-INFO`.
-4. Vulnerabilities were checked with `pip-audit` 2.10.1 against the pinned set, sourced from the PyPI Advisory Database (PYSEC) and GitHub Security Advisories (GHSA). Raw output is reproduced in §8.
-5. Container base image digests were read from the Docker Hub registry API on the SBOM date.
-6. Browser-delivered libraries were found by scanning `app/templates/` for external `src` and `href` references.
-
-Anything in this document that is an assessment rather than a measurement is labeled as such.
-
----
-
-## 3. Direct dependencies — declared in `requirements.txt`
-
-Eighteen packages, all pinned to exact versions.
-
-| # | Component | Version | License | What it does in CAIRN |
-|---|---|---|---|---|
-| 1 | flask | 3.1.0 | BSD-3-Clause | Web application framework. Every route in `app/routes/`. |
-| 2 | werkzeug | 3.1.3 | BSD-3-Clause | WSGI layer under Flask — request/response, password hashing, `safe_join` for evidence file serving. |
-| 3 | flask-sqlalchemy | 3.1.1 | BSD-3-Clause | Flask integration for the ORM session and model base. |
-| 4 | sqlalchemy | 2.0.36 | MIT | Database abstraction. All models in `app/models.py`. |
-| 5 | flask-migrate | 4.0.7 | MIT | Flask CLI wrapper around Alembic (`flask db upgrade`). |
-| 6 | alembic | 1.14.0 | MIT | Schema migrations under `migrations/`. |
-| 7 | flask-login | 0.6.3 | MIT | Session authentication, `current_user`, `login_required`. |
-| 8 | flask-wtf | 1.2.2 | BSD-3-Clause | Form handling and CSRF protection. |
-| 9 | wtforms | 3.2.1 | BSD-3-Clause | Form definition and server-side validation. |
-| 10 | authlib | 1.6.9 | BSD-3-Clause | Azure AD OIDC client for optional SSO (`app/routes/auth.py`). **See §8.** |
-| 11 | requests | 2.32.4 | Apache-2.0 | HTTP client for CrowdStrike Falcon and Proofpoint TAP polling. |
-| 12 | apscheduler | 3.10.4 | MIT | 15-minute alert poll, running in-process inside the single Gunicorn worker. |
-| 13 | psycopg2 | 2.9.10 | **LGPL with exceptions** | PostgreSQL driver. Only copyleft component in the Python tree — see §7. |
-| 14 | gunicorn | 23.0.0 | MIT | WSGI server. Single worker, 600s timeout (must outlast a `psql` restore). |
-| 15 | python-dotenv | 1.0.1 | BSD-3-Clause | Reads configuration from `.env`. |
-| 16 | email-validator | 2.2.0 | Unlicense (public domain) | Email syntax and deliverability validation. |
-| 17 | python-docx | 1.2.0 | MIT | AAR / incident report DOCX export (`app/services/report_builder.py`). |
-| 18 | tzdata | 2025.2 | Apache-2.0 | Pure-Python IANA timezone database. Required because `python:3.12-alpine` ships no system tzdata and `zoneinfo` needs one for any zone but UTC. |
+| Area | Was | Now | Why |
+|---|---|---|---|
+| Known advisories in the pinned Python set | 11 (5 packages) at the time; 20 by 2026-11-06 | **0** | Upgrades below |
+| `authlib` | 1.6.9 | 1.9.5 | 12 advisories, including JWS signature bypass (CVE-2026-96760) and ID token nonce bypass (CVE-2026-114617) |
+| `flask` | 3.1.0 | 3.1.3 | CVE-2025-47278, CVE-2026-27205 |
+| `werkzeug` | 3.1.3 | 3.1.9 | Four `safe_join` Windows device-name advisories (Windows only) |
+| `requests` | 2.32.4 | 2.34.2 | CVE-2026-25645 |
+| `python-dotenv` | 1.0.1 | 1.2.4 | CVE-2026-28684 |
+| Other direct pins | | Current releases on their existing lines | Currency, not advisories: see §4 |
+| Application base image | `python:3.12-alpine3.21` | `python:3.12-alpine3.24` | Alpine 3.21 reached end of support on 2026-11-01, and Python 3.12 images are no longer published on it |
+| Build | Single stage, compiler in the runtime image | Two stages; `gcc` and headers stay in the build stage | Done before this SBOM; the August document still described the old build |
+| Bootstrap and Bootstrap Icons | Loaded from `cdn.jsdelivr.net` on every page | Bundled in `app/static/vendor/` | Done before this SBOM; the August document still described the CDN |
+| Transitive set | 21 packages | 20 packages | `joserfc` arrives with authlib 1.9; `pytz` and `six` drop out with apscheduler 3.11 |
+| SPDX manifest | 2026-09-03, listed 148 files from inside `.git/`, product version 1.0.0 | Regenerated from tracked files only, product version 1.2.1 | `.git/` is version-control bookkeeping, not part of the product |
 
 ---
 
-## 4. Transitive dependencies — resolved, not declared
+## 3. How this inventory was built
 
-Twenty-one packages arrive because something in §3 asked for them. They ship in the image and they are as much a part of CAIRN's attack surface as the packages that were chosen deliberately.
+1. **Source:** the 100 files tracked by git on `main` @ `d9762d0`, with the 1.2.1 changes applied. `.env` and `CODE_REVIEW.md` are not tracked and are not included.
+2. **Python packages:** resolved by `pip install --dry-run --report` for the production target (CPython 3.12, `musllinux_1_2_x86_64`, the platform of `python:3.12-alpine3.24`). Versions and licenses were read from the package metadata in that report. `psycopg2` builds from source and declares no Python dependencies; its version is from `requirements.txt` and its license from its PyPI metadata.
+3. **Vulnerabilities:** `pip-audit` 2.10.1 run against every resolved package, pinned exactly, on 2026-11-06. Sources: PyPI Advisory Database and GitHub Security Advisories. Result in §9.
+4. **Tests:** the full suite (435 tests) passed against the upgraded set on 2026-11-06, on Python 3.13 with PostgreSQL 16. It was not run on the Python 3.12 Alpine image itself; see §10.
+5. **Browser libraries:** versions read from the headers of the bundled files; `npm audit` against those exact versions.
+6. **Container images and Alpine branches:** release information from the Alpine release page, the Python image tag listing, the PostgreSQL release record, and the Caddy release notes, on 2026-11-06. The registry itself could not be reached from the environment that produced this document, so image **digests are not recorded**. See §10.
+7. **SPDX manifest:** Microsoft `sbom-tool` 4.1.5, the same tool and version as the previous manifest.
+
+Anything below that is an assessment rather than a measurement says so.
+
+---
+
+## 4. Direct dependencies, declared in `requirements.txt`
+
+Eighteen packages, each pinned to an exact version.
+
+| # | Component | Version | Latest available | License | Role in CAIRN |
+|---|---|---|---|---|---|
+| 1 | flask | 3.1.3 | 3.1.3 | BSD-3-Clause | Web framework; every route in `app/routes/` |
+| 2 | werkzeug | 3.1.9 | 3.1.9 | BSD-3-Clause | WSGI layer, password hashing, file serving |
+| 3 | flask-sqlalchemy | 3.1.1 | 3.1.1 | BSD-3-Clause | ORM session and model base |
+| 4 | sqlalchemy | 2.0.57 | 2.1.8 | MIT | Database layer for every model. Held on 2.0; see §11 |
+| 5 | flask-migrate | 4.1.0 | 4.1.0 | MIT | `flask db upgrade` |
+| 6 | alembic | 1.20.1 | 1.20.1 | MIT | Schema migrations under `migrations/` |
+| 7 | flask-login | 0.6.3 | 0.6.3 | MIT | Session sign-in, `current_user` |
+| 8 | flask-wtf | 1.3.0 | 1.3.0 | BSD-3-Clause | Forms and CSRF protection |
+| 9 | wtforms | 3.3.2 | 3.3.2 | BSD-3-Clause | Form validation |
+| 10 | authlib | 1.9.5 | 1.9.5 | BSD-3-Clause | Azure AD sign-in (optional SSO) |
+| 11 | requests | 2.34.2 | 2.34.2 | Apache-2.0 | CrowdStrike, Proofpoint and threat-intel lookups |
+| 12 | apscheduler | 3.11.3 | 3.11.3 | MIT | Alert polling and evidence re-verification, in-process |
+| 13 | psycopg2 | 2.9.13 | 2.9.13 | **LGPL with exceptions** | PostgreSQL driver; see §8 |
+| 14 | gunicorn | 23.0.0 | 26.2.0 | MIT | WSGI server, one worker. Held on 23; see §11 |
+| 15 | python-dotenv | 1.2.4 | 1.2.4 | BSD-3-Clause | Reads `.env` |
+| 16 | email-validator | 2.3.0 | 2.3.0 | Unlicense | Email address validation |
+| 17 | python-docx | 1.2.0 | 1.2.0 | MIT | Incident report (DOCX) export |
+| 18 | tzdata | 2026.6 | 2026.6 | Apache-2.0 | IANA time zone data; the Alpine image has none of its own |
+
+**Development only, not in the image:** `pytest==8.4.2` (MIT), in `requirements-dev.txt`. The Dockerfile installs `requirements.txt` alone. pytest 9.x exists and is a deliberate later move.
+
+---
+
+## 5. Transitive dependencies, resolved not declared
+
+Twenty packages arrive because something in §4 asked for them. They ship in the image and are as much a part of the attack surface as the direct set.
 
 | # | Component | Version | License | Pulled in by | Role |
 |---|---|---|---|---|---|
-| 19 | blinker | 1.9.0 | MIT | flask | Signal dispatch. |
-| 20 | certifi | 2026.7.22 | **MPL-2.0** | requests | Mozilla CA bundle — the trust store for Falcon and TAP API calls. |
-| 21 | cffi | 2.1.1 | MIT-0 | cryptography | C foreign function interface. |
-| 22 | charset-normalizer | 3.5.0 | MIT | requests | Response encoding detection. |
-| 23 | click | 8.4.2 | BSD-3-Clause | flask | CLI framework behind `flask db upgrade`. |
-| 24 | cryptography | 50.0.0 | Apache-2.0 OR BSD-3-Clause | authlib | JWT and JWK handling for OIDC. |
-| 25 | dnspython | 2.8.0 | ISC | email-validator | MX record lookups for deliverability checks. |
-| 26 | greenlet | 3.5.5 | MIT AND PSF-2.0 | sqlalchemy | Coroutine support in the ORM. |
-| 27 | idna | 3.18 | BSD-3-Clause | requests, email-validator | Internationalized domain name handling. |
-| 28 | itsdangerous | 2.2.0 | BSD-3-Clause | flask, flask-wtf | Signs session cookies and CSRF tokens. This is what `SECRET_KEY` protects. |
-| 29 | jinja2 | 3.1.6 | BSD-3-Clause | flask | Template engine for everything in `app/templates/`. |
-| 30 | lxml | 6.1.1 | BSD-3-Clause | python-docx | OOXML parsing for report generation. |
-| 31 | mako | 1.4.1 | MIT | alembic | Migration script templates. |
-| 32 | markupsafe | 3.0.3 | BSD-3-Clause | jinja2, wtforms, mako | HTML escaping — the autoescape layer between case data and the browser. |
-| 33 | packaging | 26.3 | Apache-2.0 OR BSD-2-Clause | gunicorn | Version parsing. |
-| 34 | pycparser | 3.0 | BSD-3-Clause | cffi | C header parsing. |
-| 35 | pytz | 2026.3.post1 | MIT | apscheduler | Timezone handling for scheduled jobs. |
-| 36 | six | 1.17.0 | MIT | apscheduler | Python 2/3 compatibility shim. |
-| 37 | typing_extensions | 4.16.0 | PSF-2.0 | sqlalchemy, alembic, python-docx | Backported type hints. |
-| 38 | tzlocal | 5.4.4 | MIT | apscheduler | Local timezone resolution. |
-| 39 | urllib3 | 2.7.0 | MIT | requests | HTTP connection pooling and TLS. |
-
-**Development-only, not installed in the runtime image:** `pytest==8.3.4` (MIT), declared in `requirements-dev.txt`. The Dockerfile installs `requirements.txt` alone, so pytest does not ship.
+| 19 | blinker | 1.9.0 | MIT | flask | Signal dispatch |
+| 20 | certifi | 2026.10.23 | **MPL-2.0** | requests | Mozilla CA bundle; the trust store for every outbound API call |
+| 21 | cffi | 2.1.1 | MIT-0 | cryptography | C foreign function interface |
+| 22 | charset-normalizer | 3.5.2 | MIT | requests | Response encoding detection |
+| 23 | click | 8.5.1 | BSD-3-Clause | flask | CLI behind `flask db` |
+| 24 | cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | authlib, joserfc | Key and signature handling for SSO |
+| 25 | dnspython | 2.9.2 | ISC | email-validator | DNS lookups for address checks |
+| 26 | greenlet | 3.5.6 | MIT AND PSF-2.0 | sqlalchemy | Coroutine support in the ORM |
+| 27 | idna | 3.20 | BSD-3-Clause | requests, email-validator | Internationalized domain names |
+| 28 | itsdangerous | 2.2.0 | BSD-3-Clause | flask, flask-wtf | Signs session cookies and CSRF tokens; what `SECRET_KEY` protects |
+| 29 | jinja2 | 3.1.6 | BSD-3-Clause | flask | Template engine |
+| 30 | joserfc | 1.8.0 | BSD-3-Clause | authlib | **New.** JOSE and JWT handling; validates SSO ID tokens |
+| 31 | lxml | 6.1.3 | BSD-3-Clause | python-docx | XML for report generation |
+| 32 | mako | 1.4.3 | MIT | alembic | Migration script templates |
+| 33 | markupsafe | 3.0.4 | BSD-3-Clause | jinja2, werkzeug, wtforms, mako | HTML escaping between case data and the browser |
+| 34 | packaging | 26.3 | Apache-2.0 OR BSD-2-Clause | gunicorn | Version parsing |
+| 35 | pycparser | 3.12 | BSD-3-Clause | cffi | C header parsing |
+| 36 | typing_extensions | 4.16.0 | PSF-2.0 | sqlalchemy, alembic, python-docx | Type hint backports |
+| 37 | tzlocal | 5.4.5 | MIT | apscheduler | Local time zone resolution |
+| 38 | urllib3 | 2.8.0 | MIT | requests | HTTP connections and TLS |
 
 ---
 
-## 5. Container and OS layer
+## 6. Container and OS layer
 
-Three images run in the deployed stack. All three are referenced in `docker-compose.yml` and the Dockerfile by mutable tag. Digests below were resolved from the Docker Hub registry API on 2026-08-13.
+Three images run in the deployed stack.
 
-| Image | Tag in repo | Digest as of 2026-08-13 | Tag last published | Role | License |
+| Image | Tag in repo | Current upstream release, 2026-11-06 | Support | Role | License |
 |---|---|---|---|---|---|
-| `python` | `3.12-alpine` | `sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df` | 2026-06-18 | Base for the CAIRN application image | PSF-2.0 (CPython) over Alpine/musl (MIT) |
-| `postgres` | `16-alpine` | `sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777` | 2026-07-08 | Database of record | PostgreSQL License (BSD-style) |
-| `caddy` | `alpine` | `sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648` | 2026-06-24 | TLS termination and reverse proxy | Apache-2.0 |
+| `python` | `3.12-alpine3.24` (Dockerfile) | Python 3.12.16 on Alpine 3.24 | Alpine 3.24 to 2028-06-01; Python 3.12 security fixes only | Base for the CAIRN application image | PSF-2.0 over Alpine/musl (MIT) |
+| `postgres` | `16-alpine` (compose) | PostgreSQL 16.15 (2026-08-10) | PostgreSQL 16 to 2028-11-09 | Database of record | PostgreSQL License |
+| `caddy` | `alpine` (compose) | Caddy 2.11.7 (2026-10-03) | Current release line | TLS termination and reverse proxy | Apache-2.0 |
 
-### 5.1 Alpine packages installed into the application image
+`postgres:16-alpine` and `caddy:alpine` are floating tags. A server is only as current as its last `docker compose pull`. Caddy's 2.11.1 through 2.11.6 releases carried security fixes, so a Caddy pulled before October may be behind them. This document cannot see the server; §10 lists the commands that check it.
 
-The Dockerfile runs a single `apk add` before `pip install`, and there is no multi-stage build — so everything below is present in the image that runs in production, not only at build time.
+### 6.1 Alpine packages in the application image
 
-| Package | Purpose | License | Runtime necessity |
+| Package | Stage | Purpose | License |
 |---|---|---|---|
-| `gcc` | Compiles the `psycopg2` C extension | GPL-3.0-or-later WITH GCC-exception-3.1 | Build only |
-| `musl-dev` | C standard library headers for the same build | MIT | Build only |
-| `libffi-dev` | FFI headers for `cffi` | MIT | Build only |
-| `postgresql-dev` | `libpq` headers and `pg_config` for `psycopg2` | PostgreSQL License | Build only |
-| `postgresql-client` | `pg_dump` and `psql` | PostgreSQL License | **Runtime — required** by admin backup/restore |
+| `postgresql16-client` | **Runtime** | `pg_dump` and `psql` for backup and restore | PostgreSQL License |
+| `libpq` | **Runtime** | PostgreSQL client library for psycopg2 | PostgreSQL License |
+| `gcc` | Build only | Compiles psycopg2 | GPL-3.0-or-later WITH GCC-exception-3.1 |
+| `musl-dev` | Build only | C library headers | MIT |
+| `libffi-dev` | Build only | FFI headers | MIT |
+| `postgresql16-dev` | Build only | libpq headers and `pg_config` | PostgreSQL License |
 
-`postgresql-client` genuinely belongs in the runtime image; backup and restore shell out to `pg_dump` and `psql`. The other four are build tooling. They stay in the image because the build is single-stage. See §10.
+The build stage compiles psycopg2 and is discarded; the four build-only packages never reach the image that serves traffic. Both stages pin the PostgreSQL client to major version 16 to match the server. Alpine 3.24 carries `postgresql16-client` 16.15 in its community repository.
 
-### 5.2 Persistent volumes
-
-Not software, but part of the deployed footprint an auditor will ask about.
+### 6.2 Persistent volumes
 
 | Volume | Mount | Contents |
 |---|---|---|
-| `cairn_postgres_data` | `/var/lib/postgresql/data` | Case records, IOCs, evidence metadata, audit log |
-| `cairn_data` | `/app/data` | Uploaded evidence files, pre-restore safety snapshots |
-| `cairn_caddy_data` / `cairn_caddy_config` | `/data`, `/config` | Caddy local CA material and issued certificates |
+| `cairn_postgres_data` | `/var/lib/postgresql/data` | Case records, IOCs, notes, evidence metadata, audit log |
+| `cairn_data` | `/app/data` | Uploaded evidence files, pre-restore and pre-delete snapshots |
+| `cairn_caddy_data` / `cairn_caddy_config` | `/data`, `/config` | Caddy local CA material and certificates |
 
 ---
 
-## 6. Browser-delivered components
+## 7. Browser-delivered components
 
-These are not in `requirements.txt` and they are not in the image. They are fetched by the analyst's browser, from a third party, every time a page loads.
+Bundled in the repository and served by CAIRN itself. No page loads anything from a third party.
 
-| Component | Version | License | Delivered from | Referenced in |
-|---|---|---|---|---|
-| Bootstrap (CSS + JS bundle) | 5.3.3 | MIT | `cdn.jsdelivr.net` | `app/templates/base.html` |
-| Bootstrap Icons (font + CSS) | 1.11.3 | MIT | `cdn.jsdelivr.net` | `app/templates/base.html` |
-
-Neither tag carries a Subresource Integrity hash. The repository already knows this — there is a `TODO(security)` comment directly above both tags in `base.html` that names the gap, gives the command to generate the hashes, and argues for vendoring instead. The comment is right, and it is worth restating plainly: an incident response console that reaches out to a public CDN on every page load has a third-party dependency in its availability path and an unverified script in its execution path. During the incident where the network is degraded or the CDN is the thing being investigated, that is exactly when the console needs to come up on its own.
-
-`app/static/` contains only four PNG image assets — logo and favicons. No vendored JavaScript or CSS.
+| Component | Version | Latest | License | Location | Known advisories |
+|---|---|---|---|---|---|
+| Bootstrap (CSS and JS bundle) | 5.3.3 | 5.3.8 | MIT | `app/static/vendor/` | None (`npm audit`, 2026-11-06) |
+| Bootstrap Icons (CSS and fonts) | 1.11.3 | 1.13.2 | MIT | `app/static/vendor/`, `app/static/vendor/fonts/` | None (`npm audit`, 2026-11-06) |
 
 ---
 
-## 7. License summary
+## 8. License summary
 
 CAIRN itself is MIT (`LICENSE`, © 2026 Cyberclarities).
 
-| License | Component count | Components |
+| License | Count | Components |
 |---|---|---|
-| MIT / MIT-0 | 15 | sqlalchemy, flask-migrate, alembic, flask-login, apscheduler, gunicorn, python-docx, blinker, cffi, charset-normalizer, mako, pytz, six, tzlocal, urllib3 |
-| BSD (2/3-clause) | 14 | flask, werkzeug, flask-sqlalchemy, flask-wtf, wtforms, authlib, python-dotenv, click, idna, itsdangerous, jinja2, lxml, markupsafe, pycparser |
-| Apache-2.0 (or dual) | 4 | requests, tzdata, cryptography (Apache-2.0 OR BSD-3-Clause), packaging (Apache-2.0 OR BSD-2-Clause) |
-| PSF-2.0 (or dual) | 2 | typing_extensions, greenlet (MIT AND PSF-2.0) |
+| BSD (2- or 3-clause) | 15 | flask, werkzeug, flask-sqlalchemy, flask-wtf, wtforms, authlib, python-dotenv, click, idna, itsdangerous, jinja2, joserfc, lxml, markupsafe, pycparser |
+| MIT / MIT-0 | 13 | sqlalchemy, flask-migrate, alembic, flask-login, apscheduler, gunicorn, python-docx, blinker, cffi, charset-normalizer, mako, tzlocal, urllib3 |
+| Apache-2.0 (or dual) | 4 | requests, tzdata, cryptography, packaging |
+| PSF-2.0 (or dual) | 2 | typing_extensions, greenlet |
 | ISC | 1 | dnspython |
-| Unlicense (public domain) | 1 | email-validator |
+| Unlicense | 1 | email-validator |
 | **MPL-2.0** | 1 | certifi |
 | **LGPL with exceptions** | 1 | psycopg2 |
 
-Two components carry obligations beyond attribution, and both are manageable:
-
-- **psycopg2 — LGPL v3 with exceptions.** CAIRN ships it unmodified as a separate installed package. LGPL obligations attach to modification and to static linking, neither of which applies here. If psycopg2 is ever patched in-tree, that changes and the modified source must be offered.
-- **certifi — MPL-2.0.** File-level copyleft. Same condition: it ships unmodified, so the obligation is satisfied by not modifying it.
-
-No component in this inventory carries GPL obligations that reach CAIRN's own source. `gcc` in the application image is GPL-3.0, but it is a compiler present in the image, not a library CAIRN links against, and the GCC Runtime Library Exception covers compiled output regardless.
+Two carry obligations beyond attribution, and neither is triggered today. psycopg2 (LGPL) and certifi (MPL-2.0) both ship unmodified as separate installed packages. Modifying either in-tree would change that, and the modified source would then have to be offered. `gcc` (GPL) is confined to the build stage and does not ship.
 
 ---
 
-## 8. Known vulnerabilities as of 2026-08-13
+## 9. Known vulnerabilities as of 2026-11-06
 
-`pip-audit` 2.10.1 against the pinned set returned **11 advisories across 5 packages**. Source: PyPI Advisory Database and GitHub Security Advisories, queried 2026-08-13.
+**Python packages:** `pip-audit` 2.10.1 against all 38 resolved packages, pinned exactly: **no known vulnerabilities.**
 
-The triage column below is a **preliminary assessment** based on the documented conditions in each advisory measured against CAIRN's deployment as described in the README, Dockerfile, and `docker-compose.yml`. It is not a code review. Anything marked *verify* needs someone to read the relevant module before it is treated as settled.
+**Browser libraries:** `npm audit` against Bootstrap 5.3.3 and Bootstrap Icons 1.11.3: none.
 
-| Package | Installed | Advisory | CVE | Fixed in | Condition | Preliminary triage |
-|---|---|---|---|---|---|---|
-| authlib | 1.6.9 | PYSEC-2026-2119 | CVE-2026-41479 | 1.6.10 | Unauthenticated open redirect at the OAuth 2.0 **authorization endpoint** when an unsupported `response_type` is supplied with an attacker-controlled `redirect_uri`. Fires before client lookup. | Applies to Authlib acting as an authorization **server**. CAIRN is an OIDC **client**. Low likelihood of exposure — **verify**. |
-| authlib | 1.6.9 | PYSEC-2026-25 | CVE-2026-41425 | 1.6.11 | No CSRF protection on the cache feature; advisory states most integration clients share the issue. | **This one is client-side.** Read `app/routes/auth.py` and confirm whether the OIDC client is configured with a cache rather than session-bound state. **Verify — highest priority of the three.** |
-| authlib | 1.6.9 | PYSEC-2026-188 | CVE-2026-44681 | 1.6.12 | Open redirect in `OpenIDImplicitGrant` / `OpenIDHybridGrant` authorization endpoint when the request omits the `openid` scope. | Server-side grant types. Not used by an OIDC client. Low. |
-| flask | 3.1.0 | PYSEC-2026-1377 | CVE-2025-47278 | 3.1.1 | Fallback key list built in reverse, so the **oldest** fallback key signs sessions instead of the current key. | Only bites if `SECRET_KEY_FALLBACKS` is configured. CAIRN documents a single `SECRET_KEY`. Low — **verify** `app/config.py`. |
-| flask | 3.1.0 | PYSEC-2026-2151 | CVE-2026-27205 | 3.1.3 | `Vary: Cookie` not set on some response paths when the session is accessed — cached responses may contain per-user data. | **Applies.** Every authenticated page in CAIRN touches the session. Caddy does not cache by default, but any upstream proxy or CDN in front of a deployment would. Medium. |
-| python-dotenv | 1.0.1 | PYSEC-2026-2270 | CVE-2026-28684 | 1.2.2 | `set_key()` / `unset_key()` follow symlinks when rewriting `.env`, allowing arbitrary file overwrite via a crafted symlink. | CAIRN reads `.env` only; it does not write it. Low. |
-| requests | 2.32.4 | PYSEC-2026-2275 | CVE-2026-25645 | 2.33.0 | `extract_zipped_paths()` uses a predictable temp filename and reuses an existing file without validation. | That utility is not on CAIRN's call path, and it requires local write access to the container's temp directory. Low. |
-| werkzeug | 3.1.3 | PYSEC-2026-2046 | CVE-2025-66221 | 3.1.4 | `safe_join` permits Windows device names (`CON`, `AUX`). | **Windows only.** CAIRN runs on `python:3.12-alpine`. Not applicable to the supported deployment. |
-| werkzeug | 3.1.3 | PYSEC-2026-2044 | CVE-2026-21860 | 3.1.5 | Same, with file extensions or trailing spaces (`CON.txt`, `CON `). | Windows only. Not applicable. |
-| werkzeug | 3.1.3 | PYSEC-2026-2320 | CVE-2026-27199 | 3.1.6 | Same, where the device name follows other path segments (`example/NUL`). | Windows only. Not applicable. |
+**Container images:** not scanned. See §10.
 
-### 8.1 A note on the CVE comments already in `requirements.txt`
+### 9.1 Advisories cleared by release 1.2.1
 
-`requirements.txt` carries three inline comments documenting why certain floors were chosen — `authlib>=1.6.9` for CVE-2026-27962, `requests>=2.32.4` for CVE-2024-47081, `gunicorn>=23.0.0` for CVE-2024-6827. That practice is good and it should stay; it puts the reasoning next to the pin where the next person will see it.
+These were open against the pins committed before 1.2.1.
 
-But a pin chosen to clear one advisory does not stay clear. `authlib==1.6.9` was pinned to remediate CVE-2026-27962, and it does. Three advisories published since then land on that same version, and one of them — the cache CSRF issue — may be the client-side case. The comment is a record of a decision made at a point in time, not a standing statement of health. That distinction is the whole reason this SBOM needs a date on it and a re-run schedule behind it.
+| Package | Was | Advisory | Fixed in | Note |
+|---|---|---|---|---|
+| authlib | 1.6.9 | CVE-2026-96760 | 1.9.0 | JWS JSON serialization accepted without a signature |
+| authlib | 1.6.9 | CVE-2026-114617 | 1.9.0 | ID token nonce check bypassable |
+| authlib | 1.6.9 | CVE-2026-114616 | 1.9.1 | Zero-length HMAC key accepted |
+| authlib | 1.6.9 | CVE-2026-114615 | 1.9.0 | Public key usable as an HMAC secret under a mixed algorithm registry |
+| authlib | 1.6.9 | CVE-2026-114614 | 1.8.0 | Loopback exemption in the TLS check bypassable |
+| authlib | 1.6.9 | CVE-2026-41425 | 1.6.11 | No CSRF protection on the cache feature. CAIRN configures no cache |
+| authlib | 1.6.9 | CVE-2026-41479, CVE-2026-44681, CVE-2026-114618, CVE-2026-114619, CVE-2026-114620, CVE-2026-116672 | 1.6.10 to 1.9.1 | Authorization-server features; CAIRN is a client only |
+| flask | 3.1.0 | CVE-2025-47278 | 3.1.1 | Oldest fallback key signs sessions. CAIRN configures no fallbacks |
+| flask | 3.1.0 | CVE-2026-27205 | 3.1.3 | `Vary: Cookie` missing on some responses. Applied to every signed-in page |
+| werkzeug | 3.1.3 | CVE-2025-66221, CVE-2026-21860, CVE-2026-27199, CVE-2026-102598 | 3.1.4 to 3.1.9 | `safe_join` Windows device names. Windows only; CAIRN runs on Alpine |
+| requests | 2.32.4 | CVE-2026-25645 | 2.33.0 | Predictable temp file in a utility CAIRN does not call |
+| python-dotenv | 1.0.1 | CVE-2026-28684 | 1.2.2 | `set_key` follows symlinks. CAIRN reads `.env`, never writes it |
 
----
+The "Note" column is an assessment of exposure from the advisory text against how CAIRN uses each package. It was not needed to decide anything, because every one is cleared by upgrading.
 
-## 9. Known gaps in this SBOM
+### 9.2 Behavior change to test after deploying 1.2.1
 
-Stating these plainly is part of the record. An SBOM that hides its own limits is worth less than one that names them.
-
-1. **No lockfile.** `requirements.txt` pins 18 direct packages. The 21 transitive packages in §4 are what pip resolved on 2026-08-13. A build tomorrow can resolve different versions of any of them without a single line of the repository changing. The versions in §4 are accurate for this SBOM's date and are not a guarantee about any other build.
-2. **Base images pinned by tag, not digest.** The digests in §5 describe what `python:3.12-alpine`, `postgres:16-alpine`, and `caddy:alpine` pointed at on 2026-08-13. `docker compose up --build` next month pulls whatever those tags point at then.
-3. **No OS package inventory inside the base images.** §5.1 covers the packages the Dockerfile installs explicitly. The hundreds of Alpine packages already inside `python:3.12-alpine`, `postgres:16-alpine`, and `caddy:alpine` are not enumerated here. Producing that requires a container scanner (Syft, Trivy, or Docker Scout) run against the built images.
-4. **No hash verification of downloaded packages.** `pip install` in the Dockerfile does not use `--require-hashes`. Nothing in the build verifies that the wheel pulled from PyPI is the wheel that was audited.
-5. **Vulnerability triage is preliminary.** The assessments in §8 are read from advisory text against the documented deployment. Three entries are marked *verify* and need a look at the actual code before anyone acts on — or dismisses — them.
+authlib 1.9.0 now rejects an ID token whose nonce is missing or does not match. CAIRN's SSO uses the standard authorization-code flow, in which Authlib sets and checks the nonce itself, so sign-in is expected to work unchanged. It could not be tested against Azure AD from here. **Sign in with SSO once after deploying.** If it fails, the error names the nonce.
 
 ---
 
-## 10. Recommendations
+## 10. Known gaps
 
-Three, ordered by what they cost against what they close. Each one is small.
+1. **No lockfile.** Eighteen direct packages are pinned; the twenty transitive versions in §5 are what resolved on 2026-11-06. A later build can resolve different transitive versions without a line of the repository changing.
+2. **Images pinned by tag, not digest, and no digests recorded.** The registry was not reachable from the environment that produced this document. Record them on the server after the next pull and build. CAIRN's own image is built locally and has no registry digest; its base image's digest is the one to record:
+   ```
+   docker image inspect --format '{{.RepoTags}} {{index .RepoDigests 0}}' python:3.12-alpine3.24 postgres:16-alpine caddy:alpine
+   ```
+3. **The running server is not verified by this document.** To check what it actually runs:
+   ```
+   docker compose exec web sh -c 'cat /etc/alpine-release; python --version; pip list 2>/dev/null | grep -i -E "^(flask|werkzeug|authlib|requests|python-dotenv) "'
+   docker compose exec postgres postgres --version
+   docker compose exec caddy caddy version
+   ```
+   After 1.2.1 is deployed, expect Alpine 3.24.x, Python 3.12.16 or later, and the versions in §4.
+4. **No OS package inventory or scan of the images.** The packages already inside the three base images are not enumerated. That needs a container scanner (Trivy, Grype or Docker Scout) run against the built images.
+5. **No hash verification at install.** `pip install` does not use `--require-hashes`.
+6. **Tests ran on Python 3.13, not the production image.** The suite passed on 3.13 with PostgreSQL 16. The Docker build on the server is the first run on Python 3.12 Alpine; if psycopg2 fails to compile there, the build stops before anything is replaced.
 
-**1. Generate a lockfile and commit it.**
-`pip-compile` (pip-tools) or `uv pip compile` turns `requirements.txt` into a fully-pinned `requirements.lock` with hashes, and the Dockerfile installs from that with `--require-hashes`. Cost: an afternoon, plus a lock refresh whenever a dependency moves. This closes gaps 1 and 4 together, and it makes every future SBOM a read of a file rather than a resolution exercise. Highest return of the three.
+---
 
-**2. Pin the base images by digest and split the build into two stages.**
-`FROM python:3.12-alpine@sha256:6d43704...` makes the base reproducible. A builder stage that compiles `psycopg2` and a runtime stage that copies only the installed site-packages plus `postgresql-client` removes `gcc`, `musl-dev`, `libffi-dev`, and `postgresql-dev` from the production image entirely. Cost: one Dockerfile rewrite. Closes gap 2, shrinks the image, and takes a compiler out of the runtime.
+## 11. Recommendations
 
-**3. Vendor Bootstrap into `app/static/vendor/`.**
-This is already written down as a `TODO(security)` in `base.html`, and the comment argues the case correctly. Subresource Integrity hashes would close the tampering half of the problem; vendoring closes the availability half too. Cost: two files and a template edit. An incident response console should come up when the CDN does not.
-
-Underneath all three is a recurring job, not a one-time fix: run `pip-audit` and a container scan on a schedule, and re-issue this document each time. §8 has a date on it for a reason.
+1. **Deploy 1.2.1 with fresh images.** On the server: `docker compose pull`, then `docker compose up -d --build --pull always`. The pull brings `postgres` and `caddy` current; `--pull always` makes the build fetch the current Python base rather than a cached one. Then run the checks in §10.3 and sign in with SSO.
+2. **Commit a lockfile with hashes.** `pip-compile --generate-hashes` (pip-tools) or `uv pip compile --generate-hashes` produces a fully pinned file; the Dockerfile installs it with `--require-hashes`. Closes gaps 1 and 5, and makes the next SBOM a read of a file.
+3. **Pin images by digest and scan them.** Record the digests (gap 2), pin them in the Dockerfile and compose file, and run a container scanner on each rebuild. Closes gaps 2 and 4.
+4. **Run `pip-audit` on a schedule.** Between 2026-08-13 and 2026-11-06, the count of open advisories against unchanged pins went from 11 to 20. Monthly is enough to keep that gap short.
+5. **Decide the held major versions deliberately.** gunicorn 23 to 26, SQLAlchemy 2.0 to 2.1, and pytest 8 to 9 carry no advisories today and were left alone. Each is a change to test on its own, not a patch.
+6. **Optional:** update the bundled Bootstrap to 5.3.8 and Bootstrap Icons to 1.13.2. Neither has a known advisory at its current version.
 
 ---
 
 ## Sources and tooling
 
-- Component versions and licenses: package metadata from a clean Python 3.12 install of `requirements.txt` @ `b3f359d`, read via `importlib.metadata`, 2026-08-13.
-- `psycopg2` license and version: `PKG-INFO` from the PyPI source distribution `psycopg2-2.9.10.tar.gz`.
-- Vulnerability data: `pip-audit` 2.10.1, sourcing the PyPI Advisory Database (PYSEC) and GitHub Security Advisories (GHSA), queried 2026-08-13.
-- Container image digests: Docker Hub registry API v2, `library/python:3.12-alpine`, `library/postgres:16-alpine`, `library/caddy:alpine`, queried 2026-08-13.
-- Browser-delivered components: static scan of `app/templates/` for external `src` / `href` references.
-- Deployment topology: `Dockerfile`, `docker-compose.yml`, `Caddyfile`, `README.md` @ `b3f359d`.
+- Python package versions and licenses: `pip install --dry-run --report` for CPython 3.12 on `musllinux_1_2_x86_64`, 2026-11-06.
+- Vulnerabilities: `pip-audit` 2.10.1 (PyPI Advisory Database, GitHub Security Advisories), 2026-11-06; `npm audit` for the bundled browser libraries, 2026-11-06.
+- Latest package versions: PyPI, via `pip index versions`, 2026-11-06.
+- Alpine support dates and package availability: [Alpine Linux release branches](https://alpinelinux.org/releases/), [postgresql16-client on Alpine 3.24](https://pkgs.alpinelinux.org/package/v3.24/community/x86_64/postgresql16-client).
+- Python image tags: [python image release listing](https://releasealert.dev/dockerhub/_/python).
+- PostgreSQL 16 releases and support: [endoflife.date/postgresql](https://endoflife.date/postgresql).
+- Caddy releases and security fixes: [caddyserver/caddy releases](https://github.com/caddyserver/caddy/releases).
+- Authlib changes between 1.6 and 1.9: [Authlib changelog](https://docs.authlib.org/en/stable/upgrades/changelog.html).
+- SPDX manifest: Microsoft `sbom-tool` 4.1.5.
+- Deployment topology: `Dockerfile`, `docker-compose.yml`, `Caddyfile`, `README.md` at the source state above.

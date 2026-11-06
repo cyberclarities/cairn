@@ -104,14 +104,15 @@ def _audit(app, case_id, entity_type, field):
 def test_a_plain_note_is_timestamped_by_the_server_and_stays_off_the_timeline(app):
     client, user = _client(app)
     case_id = _case(app)
-    before = datetime.utcnow()
+    from app.models import utcnow
+    before = utcnow()
 
     assert _add(client, case_id).status_code == 302
 
     [n] = _notes(app, case_id)
     assert n.kind == "note" and n.body == "Called the ISP abuse desk."
     assert n.written_by_id == user["id"]
-    assert before <= n.written_at <= datetime.utcnow()
+    assert before <= n.written_at <= utcnow()
     assert n.status is None and n.owner_id is None
     assert n.timeline_event_id is None
     assert len(_audit(app, case_id, "case_note", "created")) == 1

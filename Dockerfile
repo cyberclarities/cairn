@@ -7,20 +7,27 @@
 # more than reproducibility: the postgresql16-* packages below exist only on the
 # Alpine branches that carry them, and an unpinned `python:3.12-alpine` will move
 # branches under you on some future rebuild.
-FROM python:3.12-alpine3.21 AS build
+#
+# The pin has to be moved on purpose when its Alpine branch reaches end of
+# support, or the image quietly stops receiving fixes. Alpine 3.21 ended on
+# 2026-11-01 and the Python images stopped publishing 3.12 on it. 3.24 is
+# supported to 2028-06-01 and carries postgresql16 16.15. Check
+# https://alpinelinux.org/releases/ when rebuilding, and see SBOM.md.
+FROM python:3.12-alpine3.24 AS build
 
 # PostgreSQL client packages are pinned to major version 16, to match the server
 # in docker-compose.yml (postgres:16-alpine).
 #
 # The unversioned names `postgresql-dev` and `postgresql-client` do not exist in
-# Alpine 3.21 — there is no package by either literal name. They resolve only
-# through `provides`, and the provider is whichever major version Alpine
-# currently designates the default, which is 17. That skew is not hypothetical:
+# current Alpine branches: there is no package by either literal name. They resolve
+# only through `provides`, and the provider is whichever major version that Alpine
+# branch designates the default (17 on 3.21, newer on later branches). That skew
+# is not hypothetical:
 # app/routes/settings.py strips `SET transaction_timeout` from restore input
 # because pg_dump 17 emits it and a PG16 server rejects it. That filter exists to
 # paper over exactly this mismatch. Pinning the client to 16 removes the reason
 # for it, and stops a future Alpine default of 18 introducing a new statement the
-# filter does not know about — which would surface as a failed restore, at the
+# filter does not know about, which would surface as a failed restore, at the
 # worst possible moment to discover one.
 RUN apk add --no-cache gcc musl-dev libffi-dev postgresql16-dev
 
@@ -29,7 +36,7 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 
 # ─── Runtime stage ────────────────────────────────────────────────────────────
-FROM python:3.12-alpine3.21
+FROM python:3.12-alpine3.24
 
 # pg_dump / psql for backup and restore, and libpq for psycopg2. No compiler, no
 # headers. Same major-version pin as the build stage — psycopg2 is compiled

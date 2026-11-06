@@ -1,24 +1,35 @@
-flask==3.1.0
+# flask >= 3.1.3: CVE-2025-47278 (session signed with the oldest fallback key),
+# CVE-2026-27205 (missing Vary: Cookie on some session-touching responses)
+flask==3.1.3
 flask-sqlalchemy==3.1.1
 flask-login==0.6.3
-flask-wtf==1.2.2
-flask-migrate==4.0.7
-wtforms==3.2.1
-sqlalchemy==2.0.36
-alembic==1.14.0
-werkzeug==3.1.3
-# authlib >= 1.6.9 — CVE-2026-27962 (JWK header injection / JWT forgery, CVSS 9.1)
-authlib==1.6.9
-# requests >= 2.32.4 — CVE-2024-47081 (.netrc credential leak via crafted URL)
-requests==2.32.4
-apscheduler==3.10.4
-python-dotenv==1.0.1
-email-validator==2.2.0
-# gunicorn >= 23.0.0 — CVE-2024-6827 (TE.CL HTTP request smuggling)
+flask-wtf==1.3.0
+flask-migrate==4.1.0
+wtforms==3.3.2
+# Held on the 2.0 line. 2.1 is a new minor series; move to it as a deliberate change.
+sqlalchemy==2.0.57
+alembic==1.20.1
+# werkzeug >= 3.1.9: safe_join Windows device-name bypasses (CVE-2025-66221,
+# CVE-2026-21860, CVE-2026-27199, CVE-2026-102598). Windows-only, but cleared anyway.
+werkzeug==3.1.9
+# authlib >= 1.9.1: clears 12 advisories against 1.6.9, including CVE-2026-96760
+# (JWS JSON signature bypass), CVE-2026-114617 (ID token nonce bypass) and
+# CVE-2026-114616 (zero-length HMAC key). Also covers CVE-2026-27962 from the 1.6.9 pin.
+# 1.9.0 rejects ID tokens with a missing or mismatched nonce: test SSO sign-in after deploy.
+authlib==1.9.5
+# requests >= 2.33.0: CVE-2026-25645 (predictable temp file in extract_zipped_paths).
+# Also covers CVE-2024-47081 from the earlier 2.32.4 pin.
+requests==2.34.2
+apscheduler==3.11.3
+# python-dotenv >= 1.2.2: CVE-2026-28684 (set_key/unset_key follow symlinks)
+python-dotenv==1.2.4
+email-validator==2.3.0
+# gunicorn >= 23.0.0: CVE-2024-6827 (TE.CL HTTP request smuggling). No advisory against
+# 23.0.0; 24.x to 26.x are newer major lines and are a deliberate change, not a patch.
 gunicorn==23.0.0
-psycopg2==2.9.10
-# AAR/incident report export (app/services/report_builder.py) — DOCX generation
+psycopg2==2.9.13
+# AAR/incident report export (app/services/report_builder.py): DOCX generation
 python-docx==1.2.0
-# Pure-Python IANA timezone database — python:3.12-alpine has no system
+# Pure-Python IANA timezone database. python:3.12-alpine has no system
 # tzdata, and zoneinfo needs one for anything but UTC (timeline event entry).
-tzdata==2025.2
+tzdata==2026.6
