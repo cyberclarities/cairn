@@ -14,9 +14,32 @@ csrf = CSRFProtect()
 migrate = Migrate()
 
 
+VERSION_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "VERSION")
+
+
+def read_version(path=VERSION_FILE):
+    """
+    The release version, from the VERSION file at the top of the repository.
+
+    A file rather than git: the Docker build leaves .git out of the image, so
+    the running app cannot ask git which commit it is. VERSION is copied in
+    with the code. Scheme: MAJOR.MINOR.PATCH. The owner sets MAJOR.MINOR when
+    deciding a release; PATCH goes up by one with each set of changes written
+    to the source folder (see CLAUDE.md).
+
+    A missing or empty file shows as "unknown" rather than stopping the app.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read().strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
+    app.config["CAIRN_VERSION"] = read_version()
 
     # Caddy terminates TLS and forwards to this app over plain HTTP inside
     # cairn_net. Without ProxyFix, Flask never reads X-Forwarded-Proto, so
@@ -104,6 +127,13 @@ def create_app():
     @app.route("/health")
     def health():
         return jsonify({"status": "ok"})
+
+    # Shown under the logo for signed-in users only. Deliberately not on
+    # /health, which needs no login: the exact version of a security tool is
+    # not something to hand to anyone who can reach the server.
+    @app.context_processor
+    def inject_version():
+        return {"cairn_version": app.config["CAIRN_VERSION"]}
 
     _register_security_headers(app)
 

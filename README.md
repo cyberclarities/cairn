@@ -34,6 +34,12 @@ retention rules.
 - **Database backup and restore** — download a compressed `pg_dump` from the admin panel, or restore
   from an uploaded dump. A safety snapshot is taken automatically immediately before any restore.
 
+## Versioning
+
+The running version is in [`VERSION`](VERSION) as `MAJOR.MINOR.PATCH`, and is shown under the logo
+in the sidebar once signed in. `MAJOR.MINOR` changes only when a release is decided; `PATCH` goes
+up by one with each set of changes. It is not shown on `/health`, which needs no login.
+
 ## Requirements
 
 - Docker and Docker Compose (recommended deployment path), **or**
