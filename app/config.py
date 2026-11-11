@@ -172,6 +172,9 @@ class Config:
     # Used only as the initial lookback; after the first successful poll the
     # scheduler queries forward from the stored high-water mark instead.
     PP_POLL_WINDOW = int(os.environ.get("PP_POLL_WINDOW", 900))
+    # Hosts a Proofpoint threat link may open from an alert (comma separated).
+    # Anything else in the threatUrl field is shown as text, never as a link.
+    PP_THREAT_URL_HOSTS = os.environ.get("PP_THREAT_URL_HOSTS", "threatinsight.proofpoint.com")
 
     # Overlap added to every high-water-mark query, in seconds. Guards against
     # source-side clock skew and late-arriving events. Duplicates are deduped

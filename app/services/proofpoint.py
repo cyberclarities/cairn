@@ -12,6 +12,7 @@ Environment variables:
   PP_API_SECRET         — TAP API secret
   PP_BASE_URL           — base URL (default: https://tap-api-v2.proofpoint.com)
   PP_POLL_WINDOW        — seconds of history per poll (default: 900 = 15 min)
+  PP_THREAT_URL_HOSTS   — hosts a threat link may open (default: threatinsight.proofpoint.com)
 
 Severity mapping (normalised to 1-100 scale):
   Uses the highest of spamScore / phishScore / malwareScore.
@@ -20,10 +21,92 @@ Severity mapping (normalised to 1-100 scale):
 
 import logging
 from datetime import datetime
+from urllib.parse import urlsplit
 
 import requests
 
 log = logging.getLogger(__name__)
+
+# The TAP dashboard, where Proofpoint's own page for each threat lives.
+DEFAULT_THREAT_URL_HOSTS = ("threatinsight.proofpoint.com",)
+
+
+# ---------------------------------------------------------------------------
+# Threat links: Proofpoint's page for each threat, opened from the alert
+# ---------------------------------------------------------------------------
+#
+# Two kinds of URL travel in a Proofpoint event, and they must never be
+# confused. threatUrl (threatURL on click events) is Proofpoint's own page
+# about the threat, on the TAP dashboard. That is what an analyst wants to
+# open. url on a click event, and threat inside threatsInfoMap, are the
+# malicious link or attachment hash itself. Those are evidence; they stay
+# plain text and are never made clickable anywhere in CAIRN.
+#
+# The value comes from an outside API, so it is checked before it becomes a
+# link: https only, on an allowed TAP host, no credentials, no unusual port,
+# no control characters. Anything that fails is shown as text and labeled,
+# not linked and not hidden. A javascript: URL or a look-alike host placed in
+# that field must not turn into one click from an analyst's screen.
+
+
+def allowed_threat_hosts(config) -> tuple:
+    raw = (config.get("PP_THREAT_URL_HOSTS") or "").replace(",", " ").split()
+    hosts = tuple(h.strip().lower().rstrip(".") for h in raw if h.strip())
+    return hosts or DEFAULT_THREAT_URL_HOSTS
+
+
+def safe_threat_url(url, allowed_hosts) -> bool:
+    """True when url may be rendered as a clickable link."""
+    if not isinstance(url, str) or not url or len(url) > 2048:
+        return False
+    if any(ord(c) <= 0x20 or ord(c) == 0x7F for c in url):
+        return False
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return False
+    if parts.scheme != "https" or parts.username or parts.password:
+        return False
+    if port not in (None, 443):
+        return False
+    host = (parts.hostname or "").lower().rstrip(".")
+    return host in allowed_hosts
+
+
+def _threat_url_of(entry: dict):
+    """threatUrl, matched case-insensitively: Proofpoint spells it two ways."""
+    for key, value in entry.items():
+        if isinstance(key, str) and key.lower() == "threaturl" and isinstance(value, str):
+            return value.strip() or None
+    return None
+
+
+def threat_links(raw: dict, allowed_hosts) -> list[dict]:
+    """
+    Proofpoint threat-page links for one stored event, in the order they
+    appear. Each is {"url", "label", "safe"}; only safe ones are rendered as
+    links. Message events carry one per entry in threatsInfoMap; click events
+    carry one at the top level.
+    """
+    if not isinstance(raw, dict):
+        return []
+    entries = [t for t in (raw.get("threatsInfoMap") or []) if isinstance(t, dict)]
+    entries.append(raw)
+    out, seen = [], set()
+    for entry in entries:
+        url = _threat_url_of(entry)
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        # Built from the classification and type only. The "threat" field is
+        # the malicious URL or hash and does not belong in a link's label.
+        parts = [str(entry.get("classification") or "").strip().title(),
+                 str(entry.get("threatType") or "").strip().lower()]
+        label = " · ".join(p for p in parts if p) or "Threat"
+        out.append({"url": url, "label": label,
+                    "safe": safe_threat_url(url, allowed_hosts)})
+    return out
 
 
 def _parse_severity(score: int) -> str:

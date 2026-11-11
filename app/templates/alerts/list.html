@@ -222,6 +222,30 @@
                   </ul>
                 </div>
                 {% endif %}
+                {# Proofpoint's own page for the threat, in a new tab. Only links
+                   that pass the check in services/proofpoint.py are rendered;
+                   the malicious URL itself is never a link here. #}
+                {% set tap_links = a.threat_links|selectattr('safe')|list if a.source == 'proofpoint' else [] %}
+                {% if tap_links|length == 1 %}
+                <a href="{{ tap_links[0].url }}" target="_blank" rel="noopener noreferrer"
+                   class="btn btn-xs btn-outline-primary btn-sm py-0 px-2"
+                   title="Open in Proofpoint TAP ({{ tap_links[0].label }}), new tab">
+                  <i class="bi bi-box-arrow-up-right"></i> TAP
+                </a>
+                {% elif tap_links|length > 1 %}
+                <div class="btn-group">
+                  <button type="button" class="btn btn-xs btn-outline-primary btn-sm py-0 px-2 dropdown-toggle"
+                          data-bs-toggle="dropdown" title="Open in Proofpoint TAP, new tab">
+                    <i class="bi bi-box-arrow-up-right"></i> TAP ({{ tap_links|length }})
+                  </button>
+                  <ul class="dropdown-menu dropdown-menu-end">
+                    <li><h6 class="dropdown-header small">Open in Proofpoint TAP</h6></li>
+                    {% for t in tap_links %}
+                    <li><a class="dropdown-item small" href="{{ t.url }}" target="_blank" rel="noopener noreferrer">{{ t.label }}</a></li>
+                    {% endfor %}
+                  </ul>
+                </div>
+                {% endif %}
                 <a href="{{ url_for('alerts.detail', alert_id=a.id) }}"
                    class="btn btn-xs btn-outline-secondary btn-sm py-0 px-2">
                   <i class="bi bi-eye"></i>

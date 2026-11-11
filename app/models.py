@@ -886,6 +886,24 @@ class Alert(db.Model):
         return {"crowdstrike": "CrowdStrike", "proofpoint": "Proofpoint"}.get(self.source, self.source.title())
 
     @property
+    def threat_links(self):
+        """
+        Proofpoint's TAP page for each threat on this alert, read from the
+        stored API response. Empty for other sources or unreadable JSON. See
+        app/services/proofpoint.py for which links are made clickable.
+        """
+        if self.source != "proofpoint" or not self.raw_json:
+            return []
+        import json
+        from flask import current_app
+        from app.services.proofpoint import allowed_threat_hosts, threat_links
+        try:
+            raw = json.loads(self.raw_json)
+        except ValueError:
+            return []
+        return threat_links(raw, allowed_threat_hosts(current_app.config))
+
+    @property
     def source_color(self):
         return {"crowdstrike": "danger", "proofpoint": "primary"}.get(self.source, "secondary")
 

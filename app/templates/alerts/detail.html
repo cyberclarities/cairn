@@ -115,6 +115,33 @@
       <div class="card-body small" style="white-space:pre-wrap">{{ alert.description or 'No description provided.' }}</div>
     </div>
 
+    {% if alert.source == 'proofpoint' %}
+    {% set tap_links = alert.threat_links %}
+    <div class="card mb-3">
+      <div class="card-header fw-semibold small">Proofpoint threat details</div>
+      <div class="card-body small">
+        {% if tap_links %}
+        <ul class="list-unstyled mb-0">
+          {% for t in tap_links %}
+          <li class="mb-2">
+            <span class="fw-semibold">{{ t.label }}</span><br>
+            {% if t.safe %}
+            <a href="{{ t.url }}" target="_blank" rel="noopener noreferrer"><i class="bi bi-box-arrow-up-right"></i> Open in Proofpoint TAP</a>
+            <span class="text-muted ms-1" style="word-break:break-all">{{ t.url }}</span>
+            {% else %}
+            <span class="text-muted" style="word-break:break-all">{{ t.url }}</span><br>
+            <span class="text-danger">Not a Proofpoint TAP address, so it is not made clickable. Check it before opening.</span>
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <span class="text-muted">This alert carries no Proofpoint threat link.</span>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+
     {% if current_user.is_analyst %}
     <div class="card mb-3">
       <div class="card-header fw-semibold small">Status</div>

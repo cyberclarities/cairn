@@ -3,10 +3,10 @@
 | | |
 |---|---|
 | **Product** | CAIRN, self-hosted incident case management console |
-| **Version** | 1.2.3 (`VERSION`) |
+| **Version** | 1.2.4 (`VERSION`) |
 | **Publisher** | Cyberclarities |
 | **Product license** | MIT |
-| **Source state** | `main` @ `5994272` ("SBOM update", release 1.2.1) plus `update.sh` (1.2.2) and `UPDATING.md` (1.2.3). Components are unchanged from 1.2.1. |
+| **Source state** | `main` @ `006b458` ("Update script built", release 1.2.3) plus Proofpoint threat links (1.2.4). Components are unchanged from 1.2.1. |
 | **SBOM date** | 2026-11-06 |
 | **Prepared by** | Claude (AI assistant) for Ted Mecimore. Owner review pending. |
 | **Formats** | This document, plus a machine-readable SPDX 3.0 manifest in `_manifest/spdx_3.0/` |
@@ -43,7 +43,7 @@ The previous SBOM was dated 2026-08-13. Between then and now, eleven new advisor
 
 ## 3. How this inventory was built
 
-1. **Source:** the 102 files tracked by git on `main` @ `5994272`, with `update.sh` (1.2.2) and `UPDATING.md` (1.2.3) added. `.env` and `CODE_REVIEW.md` are not tracked and are not included.
+1. **Source:** the 103 files tracked by git on `main` @ `006b458`, with the 1.2.4 changes applied. `.env` and `CODE_REVIEW.md` are not tracked and are not included.
 2. **Python packages:** resolved by `pip install --dry-run --report` for the production target (CPython 3.12, `musllinux_1_2_x86_64`, the platform of `python:3.12-alpine3.24`). Versions and licenses were read from the package metadata in that report. `psycopg2` builds from source and declares no Python dependencies; its version is from `requirements.txt` and its license from its PyPI metadata.
 3. **Vulnerabilities:** `pip-audit` 2.10.1 run against every resolved package, pinned exactly, on 2026-11-06. Sources: PyPI Advisory Database and GitHub Security Advisories. Result in §9.
 4. **Tests:** the full suite (435 tests) passed against the upgraded set on 2026-11-06, on Python 3.13 with PostgreSQL 16. It was not run on the Python 3.12 Alpine image itself; see §10.
