@@ -1,0 +1,38 @@
+## CAIRN behind Stile, the shared Nginx proxy (~/source/stile) instead of its
+## own Caddy.
+##
+## Turned on from .env, not by hand:
+##
+##   COMPOSE_FILE=docker-compose.yml:docker-compose.nginx.yml
+##
+## With that line set, every plain `docker compose ...` (and update.sh) reads
+## both files. This one:
+##   - parks the caddy service behind a profile, so it is no longer started.
+##     `docker compose --profile caddy up -d` still runs it, if you need it.
+##   - joins web to the proxy's network as "cairn-web", which is what
+##     CAIRN_UPSTREAM in stile/.env points at.
+##
+## Start Stile first; it owns the network this file joins.
+##
+## Switching an existing install from Caddy: stop Caddy before the proxy
+## starts, or it is still holding port 7443.
+##
+##   docker compose rm -sf caddy
+##
+## Back to Caddy: comment out COMPOSE_FILE in .env, then `docker compose up -d`.
+
+services:
+
+  caddy:
+    profiles: ["caddy"]
+
+  web:
+    networks:
+      cairn_net:
+      stile_net:
+        aliases: [cairn-web]
+
+networks:
+  stile_net:
+    external: true
+    name: ${STILE_NETWORK:-stile_net}
