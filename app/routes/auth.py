@@ -81,8 +81,10 @@ def _client_ip() -> str:
     does it centrally, with an explicit hop count.
 
     The assumption underneath is worth stating plainly, because every IP in the
-    authentication audit trail rests on it: Caddy *overwrites* X-Forwarded-For
-    rather than appending to whatever the client sent. Put CAIRN behind a proxy
+    authentication audit trail rests on it: the proxy in front *overwrites*
+    X-Forwarded-For rather than appending to whatever the client sent. Caddy
+    does this on its own; Stile does it explicitly, in nginx/snippets/proxy.conf
+    (proxy_set_header X-Forwarded-For $remote_addr). Put CAIRN behind a proxy
     that does not, or expose it directly, and these IPs become attacker-controlled
     strings in a security log. Re-check this if the deployment shape changes.
     """

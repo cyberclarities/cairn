@@ -5,14 +5,14 @@ First full release.
 CAIRN is a self-hosted incident case management console. Cases, indicators, evidence with chain of
 custody, a timeline mapped to MITRE ATT&CK, alert ingestion, threat-intelligence enrichment,
 role-based access, an audit log, and a per-case after-action report. Flask on PostgreSQL 16,
-deployed by Docker Compose behind Caddy. MIT licensed.
+deployed by Docker Compose behind a TLS-terminating reverse proxy: Caddy in 1.0.0, and Stile, the
+shared Nginx proxy, by default from 1.2.5. MIT licensed.
 
 Case data stays on the operator's own infrastructure. Every decision in this release answers to
 that — including several places where a more convenient design was available and was not taken.
 
 **Schema head:** `d7e1c5a83b40` · seven migrations · 51 environment variables documented in
 `.env.example`
-
 
 ---
 
@@ -127,8 +127,12 @@ Three things that bite people:
 diff <(grep -oE '^[A-Z_]+' .env.example | sort -u) <(grep -oE '^[A-Z_]+' .env | sort -u)
 ```
 
-Caddy terminates TLS in front of the application. `ProxyFix` is enabled and `PREFERRED_URL_SCHEME`
-is `https`, so OIDC redirect URIs are built correctly behind the proxy.
+A reverse proxy terminates TLS in front of the application. From 1.2.5 that is Stile, the shared
+Nginx proxy (https://github.com/cyberclarities/stile), selected by `COMPOSE_FILE` in `.env`; start
+Stile before CAIRN, since it owns the network CAIRN joins. Comment out `COMPOSE_FILE` to run CAIRN's
+own Caddy instead. Either way `ProxyFix` is enabled and `PREFERRED_URL_SCHEME` is `https`, so OIDC
+redirect URIs are built correctly behind the proxy, and both proxies overwrite `X-Forwarded-For`,
+which the audit trail's client addresses depend on.
 
 ## Testing
 

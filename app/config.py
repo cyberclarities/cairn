@@ -53,7 +53,8 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # ── Session cookie hardening ─────────────────────────────────────────────
-    # The app is served over TLS by Caddy, so Secure is safe to require.
+    # The app is served over TLS by the proxy in front (Stile or Caddy), so
+    # Secure is safe to require.
     # Set SESSION_COOKIE_SECURE=false only when running plain HTTP locally.
     SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "true").lower() == "true"
     SESSION_COOKIE_HTTPONLY = True

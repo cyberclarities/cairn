@@ -24,11 +24,13 @@
 #      Database migrations run as CAIRN starts, or explicitly here when
 #      AUTO_UPGRADE_DB=false.
 #   6. Verify. Waits for CAIRN to answer, then reports the version, Alpine,
-#      Python, PostgreSQL and Caddy versions, and the database revision.
+#      Python and PostgreSQL versions, the proxy in front, and the database
+#      revision.
 #
-# Even with no new code, a run still pulls fresh postgres and caddy images and
-# rebuilds on the current Python base, so it is also the way to pick up their
-# security fixes. Run it at least monthly for that reason alone.
+# Even with no new code, a run still pulls a fresh postgres image (and caddy,
+# when CAIRN runs its own Caddy) and rebuilds on the current Python base, so it
+# is also the way to pick up their security fixes. Run it at least monthly for
+# that reason alone. Behind Stile, update Stile from its own folder.
 #
 # It never deletes a backup, never rolls the database back on its own, and
 # never touches .env. If something goes wrong after the pull, it prints the
@@ -230,8 +232,18 @@ if $code_changes; then
   ok "Code updated to v$(tr -d '[:space:]' < VERSION)"
 fi
 
-info "Pulling current postgres and caddy images..."
-compose pull --quiet postgres caddy
+# Behind Stile (COMPOSE_FILE in .env), the caddy service is parked and there is
+# no Caddy image to refresh. Pull only what this deployment actually runs.
+active_services=$(compose config --services 2>/dev/null || true)
+if grep -qx caddy <<<"$active_services"; then
+  proxy="caddy"
+  info "Pulling current postgres and caddy images..."
+  compose pull --quiet postgres caddy
+else
+  proxy="stile"
+  info "Pulling current postgres image (Caddy is parked; Stile updates from its own folder)..."
+  compose pull --quiet postgres
+fi
 ok "Images pulled"
 
 info "Rebuilding CAIRN on the current Python base image (this takes a few minutes)..."
@@ -267,7 +279,11 @@ running_version=$(compose exec -T web cat VERSION 2>/dev/null | tr -d '[:space:]
 alpine=$(compose exec -T web cat /etc/alpine-release 2>/dev/null | tr -d '[:space:]' || echo "?")
 python=$(compose exec -T web python --version 2>/dev/null | awk '{print $2}' || echo "?")
 pgver=$(compose exec -T postgres postgres --version 2>/dev/null | awk '{print $3}' || echo "?")
-caddyver=$(compose exec -T caddy caddy version 2>/dev/null | awk '{print $1}' || echo "?")
+if [ "$proxy" = "caddy" ]; then
+  proxyline="Caddy       $(compose exec -T caddy caddy version 2>/dev/null | awk '{print $1}' || echo "?")"
+else
+  proxyline="Proxy       Stile, updated separately from its own folder"
+fi
 new_revision=$(psql_value "select version_num from alembic_version" || echo "?")
 
 PREV_COMMIT=""   # past this point there is nothing to roll back
@@ -276,7 +292,7 @@ printf '\n%sCAIRN v%s is running.%s\n' "$GREEN" "$running_version" "$RESET"
 info "Alpine      $alpine"
 info "Python      $python"
 info "PostgreSQL  $pgver"
-info "Caddy       $caddyver"
+info "$proxyline"
 info "Database    revision $new_revision"
 info "Backup      $BACKUP_FILE"
 echo

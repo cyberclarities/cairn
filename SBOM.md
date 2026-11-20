@@ -121,9 +121,10 @@ Three images run in the deployed stack.
 |---|---|---|---|---|---|
 | `python` | `3.12-alpine3.24` (Dockerfile) | Python 3.12.16 on Alpine 3.24 | Alpine 3.24 to 2028-06-01; Python 3.12 security fixes only | Base for the CAIRN application image | PSF-2.0 over Alpine/musl (MIT) |
 | `postgres` | `16-alpine` (compose) | PostgreSQL 16.15 (2026-08-10) | PostgreSQL 16 to 2028-11-09 | Database of record | PostgreSQL License |
-| `caddy` | `alpine` (compose) | Caddy 2.11.7 (2026-10-03) | Current release line | TLS termination and reverse proxy | Apache-2.0 |
+| `caddy` | `alpine` (compose) | Caddy 2.11.7 (2026-10-03) | Current release line | TLS termination and reverse proxy, when CAIRN runs its own Caddy (opt-out from 1.2.5) | Apache-2.0 |
+| `nginxinc/nginx-unprivileged` | `stable-alpine` ([Stile](https://github.com/cyberclarities/stile) Dockerfile) | Not recorded: built on the server from a floating tag | nginx stable line | TLS termination and reverse proxy in front of CAIRN by default from 1.2.5. Built and versioned in the Stile repository, not this one | BSD-2-Clause |
 
-`postgres:16-alpine` and `caddy:alpine` are floating tags. A server is only as current as its last `docker compose pull`. Caddy's 2.11.1 through 2.11.6 releases carried security fixes, so a Caddy pulled before October may be behind them. This document cannot see the server; §10 lists the commands that check it.
+`postgres:16-alpine`, `caddy:alpine` and Stile's `nginx-unprivileged:stable-alpine` are floating tags. A server is only as current as its last `docker compose pull`. Caddy's 2.11.1 through 2.11.6 releases carried security fixes, so a Caddy pulled before October may be behind them. This document cannot see the server; §10 lists the commands that check it.
 
 ### 6.1 Alpine packages in the application image
 
@@ -144,7 +145,7 @@ The build stage compiles psycopg2 and is discarded; the four build-only packages
 |---|---|---|
 | `cairn_postgres_data` | `/var/lib/postgresql/data` | Case records, IOCs, notes, evidence metadata, audit log |
 | `cairn_data` | `/app/data` | Uploaded evidence files, pre-restore and pre-delete snapshots |
-| `cairn_caddy_data` / `cairn_caddy_config` | `/data`, `/config` | Caddy local CA material and certificates |
+| `cairn_caddy_data` / `cairn_caddy_config` | `/data`, `/config` | Caddy local CA material and certificates (Caddy mode only; behind Stile, the CA lives in Stile's `stile_state` volume) |
 
 ---
 
@@ -224,7 +225,8 @@ authlib 1.9.0 now rejects an ID token whose nonce is missing or does not match. 
    ```
    docker compose exec web sh -c 'cat /etc/alpine-release; python --version; pip list 2>/dev/null | grep -i -E "^(flask|werkzeug|authlib|requests|python-dotenv) "'
    docker compose exec postgres postgres --version
-   docker compose exec caddy caddy version
+   docker compose exec caddy caddy version        # on Caddy
+   docker exec stile nginx -v                      # behind Stile
    ```
    After 1.2.1 is deployed, expect Alpine 3.24.x, Python 3.12.16 or later, and the versions in §4.
 4. **No OS package inventory or scan of the images.** The packages already inside the three base images are not enumerated. That needs a container scanner (Trivy, Grype or Docker Scout) run against the built images.
@@ -255,4 +257,4 @@ authlib 1.9.0 now rejects an ID token whose nonce is missing or does not match. 
 - Caddy releases and security fixes: [caddyserver/caddy releases](https://github.com/caddyserver/caddy/releases).
 - Authlib changes between 1.6 and 1.9: [Authlib changelog](https://docs.authlib.org/en/stable/upgrades/changelog.html).
 - SPDX manifest: Microsoft `sbom-tool` 4.1.5.
-- Deployment topology: `Dockerfile`, `docker-compose.yml`, `Caddyfile`, `README.md` at the source state above.
+- Deployment topology: `Dockerfile`, `docker-compose.yml`, `docker-compose.nginx.yml`, `Caddyfile`, `README.md` at the source state above. Stile's own components are in its repository.

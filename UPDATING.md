@@ -48,8 +48,8 @@ The script works in six steps and stops at the first problem, saying why:
 2. **What is available.** The version you have, the version on GitHub, and the commits between.
 3. **Migration check.** The database's schema revision must be one the incoming code knows.
 4. **Backup.** A compressed copy of the whole database into `backups/`. No backup, no update.
-5. **Update.** Pull the code, pull fresh `postgres` and `caddy` images, rebuild CAIRN on the
-   current Python base image, start it. Database migrations run as CAIRN starts.
+5. **Update.** Pull the code, pull a fresh `postgres` image (and `caddy`, when CAIRN runs its own
+   Caddy), rebuild CAIRN on the current Python base image, start it. Database migrations run as CAIRN starts.
 6. **Verify.** Wait for CAIRN to answer, then report what is running:
 
 ```
@@ -57,7 +57,7 @@ CAIRN v1.2.3 is running.
        Alpine      3.24.4
        Python      3.12.16
        PostgreSQL  16.15
-       Caddy       v2.11.7
+       Caddy       v2.11.7          (behind Stile, this line reads "Proxy  Stile, updated separately")
        Database    revision f1c3a8e5d240
        Backup      backups/cairn-v1.2.2-20261106T213558Z-4812.sql.gz
 ```
@@ -67,8 +67,9 @@ changed, sign in with SSO once to confirm it.
 
 ### Run it monthly, even with nothing new
 
-When there is no new code, the script still pulls fresh `postgres` and `caddy` images and rebuilds
-on the current Python base. That is how those layers pick up their security fixes. To schedule
+When there is no new code, the script still pulls a fresh `postgres` image (and `caddy`, on
+Caddy) and rebuilds on the current Python base. Behind Stile, update Stile on the same schedule from
+its own folder: `docker compose up -d --build --pull always`. That is how those layers pick up their security fixes. To schedule
 it, add a line with `crontab -e` as the CAIRN user:
 
 ```
@@ -200,7 +201,8 @@ cat VERSION
 git log --oneline -1
 docker compose exec web sh -c 'cat /etc/alpine-release; python --version'
 docker compose exec postgres postgres --version
-docker compose exec caddy caddy version
+docker compose exec caddy caddy version        # on Caddy
+docker exec stile nginx -v                      # behind Stile
 docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "select version_num from alembic_version"'
 ```
 

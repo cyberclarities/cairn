@@ -41,8 +41,9 @@ def create_app():
     app.config.from_object(Config)
     app.config["CAIRN_VERSION"] = read_version()
 
-    # Caddy terminates TLS and forwards to this app over plain HTTP inside
-    # cairn_net. Without ProxyFix, Flask never reads X-Forwarded-Proto, so
+    # The reverse proxy in front (Stile by default, or CAIRN's own Caddy)
+    # terminates TLS and forwards to this app over plain HTTP on the Docker
+    # network. Without ProxyFix, Flask never reads X-Forwarded-Proto, so
     # request.scheme is "http" and url_for(..., _external=True) builds the OIDC
     # redirect_uri as http://host/auth/oidc/callback. Azure AD rejects that as a
     # redirect-URI mismatch — or, worse, an operator registers the http:// form to
@@ -245,7 +246,7 @@ def _register_security_headers(app):
     """
     Attach baseline response headers.
 
-    Caddy terminates TLS in front of this app, but headers set here travel with
+    The proxy in front (Stile or Caddy) terminates TLS, but headers set here travel with
     the response regardless of what sits in front of it — including a direct
     connection to the container during troubleshooting.
     """

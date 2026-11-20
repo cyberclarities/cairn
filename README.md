@@ -42,7 +42,9 @@ up by one with each set of changes. It is not shown on `/health`, which needs no
 
 ## Requirements
 
-- Docker and Docker Compose (recommended deployment path), **or**
+- Docker and Docker Compose (recommended deployment path), with
+  [Stile](https://github.com/cyberclarities/stile), the shared Nginx reverse proxy, on the same
+  host, **or**
 - Python 3.12+ and a PostgreSQL 16 instance, for running outside containers
 
 ## Quick start (Docker Compose)
@@ -64,13 +66,47 @@ openssl rand -hex 32   # SECRET_KEY
 `SECRET_KEY` is not optional — the app refuses to start on a missing, short, or placeholder value.
 A weak key means forgeable session cookies.
 
+CAIRN runs behind Stile by default: the `COMPOSE_FILE` line in `.env` loads
+`docker-compose.nginx.yml`, which joins CAIRN to Stile's network. Stile owns that network, so start
+it first, or CAIRN fails with *network stile_net … not found*:
+
+```bash
+git clone https://github.com/cyberclarities/stile.git ../stile
+cd ../stile && cp .env.example .env    # set CAIRN_SERVER_NAME to match SERVER_NAME in cairn/.env
+docker compose up -d --build
+cd ../cairn
+```
+
+Then start CAIRN:
+
 ```bash
 docker compose up --build -d
 ```
 
-CAIRN is served behind Caddy on `https://<SERVER_NAME>` (default `https://localhost`), with a
-self-signed certificate for local use. Log in with `ADMIN_USERNAME` / `ADMIN_PASSWORD` from `.env` —
-that account is created once, on first start, and ignored on every start after.
+CAIRN is served through Stile on `https://<SERVER_NAME>:7443` (default `https://localhost:7443`).
+Stile issues the certificate from its own local CA; trust that CA once per workstation, as Stile's
+README describes, and every site behind Stile is trusted. Log in with `ADMIN_USERNAME` /
+`ADMIN_PASSWORD` from `.env` — that account is created once, on first start, and ignored on every
+start after.
+
+### Running on CAIRN's own Caddy instead
+
+Comment out `COMPOSE_FILE` in `.env` and run `docker compose up -d`. Caddy then serves CAIRN on the
+same `https://<SERVER_NAME>:7443`, with a self-signed certificate, and Stile is not needed.
+
+### Moving an existing deployment from Caddy to Stile
+
+An existing `.env` predates the option, so it keeps Caddy until changed. With Stile running:
+
+```bash
+printf '\nCOMPOSE_FILE=docker-compose.yml:docker-compose.nginx.yml\n' >> .env
+docker compose rm -sf caddy     # frees port 7443 for Stile
+docker compose up -d
+```
+
+Set `BASE_URL` in `.env` to include `:7443` while you are there. To go back, comment out
+`COMPOSE_FILE`, free 7443 (stop Stile, or move `CAIRN_HTTPS_PORT` in Stile's `.env` to a spare
+port), and run `docker compose up -d`.
 
 ## Configuration
 
@@ -80,7 +116,8 @@ The sections:
 | Section | Required? | Notes |
 |---|---|---|
 | PostgreSQL | Yes | `POSTGRES_PASSWORD` and `CAIRN_DB_PASSWORD` have no default. The app connects as `CAIRN_DB_USER`, a role without superuser rights; `POSTGRES_USER` is used only to create it. |
-| Hostname & port | Yes | `SERVER_NAME` must match what users type in the browser; Caddy issues TLS for it. |
+| Hostname & port | Yes | `SERVER_NAME` must match what users type in the browser, and `CAIRN_SERVER_NAME` in Stile's `.env` (or, on Caddy, the name Caddy issues TLS for). `PORT` must match `CAIRN_UPSTREAM` in Stile's `.env`. |
+| Reverse proxy | Yes | `COMPOSE_FILE` selects Stile (set, the default) or CAIRN's own Caddy (commented out). |
 | Security | Yes | `SECRET_KEY`, session cookie flags, login lockout thresholds. |
 | Bootstrap admin | Yes | Used once, on first start, to create the initial admin account. |
 | Case/evidence ID prefixes | No | Set before first use — changing them later does not renumber existing records. |
@@ -175,9 +212,10 @@ The script refuses to start if the folder is not on `main`, has local edits, or 
 at a schema revision the incoming code does not know (which happens when a removed feature branch
 moved it forward). Otherwise it takes a compressed database backup into `backups/` (readable by
 the server user only, never committed, never copied into the image), pulls the code, pulls fresh
-`postgres` and `caddy` images, rebuilds on the current Python base, and waits for CAIRN to answer.
-It ends by printing the version now running and the Alpine, Python, PostgreSQL and Caddy versions
-under it. If the update fails part way, it prints the commands to go back to the previous version.
+`postgres` image (and `caddy`, when CAIRN runs its own Caddy), rebuilds on the current Python base,
+and waits for CAIRN to answer. It ends by printing the version now running, the Alpine, Python and
+PostgreSQL versions under it, and the proxy in front: the Caddy version, or a reminder that Stile is
+updated from its own folder. If the update fails part way, it prints the commands to go back to the previous version.
 
 Run it even when no new code is expected: it is also how the base images pick up their security
 fixes. `./update.sh --yes` skips the confirmation prompt, for a scheduled run.

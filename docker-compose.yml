@@ -1,8 +1,13 @@
 ## CAIRN — standalone deployment (PostgreSQL)
 ##
-## Access: https://{SERVER_NAME}
+## Access: https://{SERVER_NAME}:7443
+##
+## Proxy: Stile, the shared Nginx proxy, by default. COMPOSE_FILE in .env also
+## loads docker-compose.nginx.yml, which parks the caddy service below and joins
+## web to Stile's network. Comment COMPOSE_FILE out to run the caddy service.
 ##
 ## Usage:
+##   start Stile first (https://github.com/cyberclarities/stile), then:
 ##   cp .env.example .env && nano .env
 ##   docker compose up --build -d
 ##
