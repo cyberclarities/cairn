@@ -59,6 +59,12 @@ class Config:
     SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "true").lower() == "true"
     SESSION_COOKIE_HTTPONLY = True
     SESSION_COOKIE_SAMESITE = "Lax"
+    # Cookie names unique to CAIRN. Browsers scope cookies by hostname, not by
+    # port, so two Flask apps on one host (localhost:7443 and localhost:8443
+    # behind Stile) would otherwise share Flask's default "session" cookie, and
+    # signing in to one would sign you out of the other.
+    SESSION_COOKIE_NAME = "cairn_session"
+    REMEMBER_COOKIE_NAME = "cairn_remember"
     PERMANENT_SESSION_LIFETIME = timedelta(
         minutes=int(os.environ.get("SESSION_LIFETIME_MINUTES", 480))
     )
